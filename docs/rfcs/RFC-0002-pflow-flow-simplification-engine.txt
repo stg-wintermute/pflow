@@ -1,0 +1,483 @@
+          RFC2: pflow — A Flow-Simplification Pass Engine for an Opinionated Review Agent
+
+
+Status:         v1 IMPLEMENTED & STABLE (2026-05-29)
+                Phases A-D shipped (constant-prop, nullness via edge-sensitivity,
+                dependence overloaded-var, and structured regeneration deferred —
+                see §8). 98 tests; pflow is dogfood-clean on itself.
+                Hardened by a code-review + ruff + 5,600-run stress pass: fixed
+                3 correctness bugs (const-prop poisoned constants across loop
+                back-edges; for-loop target was bound pre-header so empty-loop
+                use-after was missed; dominators had a wrong 100-iteration cap),
+                removed unused imports; all regression-tested. Further hardened
+                by a metric-noise pass after the agent reviewed an external
+                service (§8): cyclomatic/cognitive/nesting no longer inflate on
+                exception edges or elif/dispatch chains, max_live_span added as
+                the data-density "decompose" signal, and the with-block
+                use-before-def false positive removed.
+Authors:        lafiel
+Created:        2026-05-29
+Depends on:     RFC-0001 (pflow IR, CFG, dataflow, refs), RFC-0001 §16 (interprocedural layer)
+
+
+1.  Abstract
+
+    RFC-0001 gave pflow a correct IR (CFG, dominators, name-based
+    reaching-definitions, slices, interprocedural call/state/trace).
+    This RFC reframes the goal: pflow + the flow-graph-reviewer agent
+    is not only a bug finder but an OPINIONATED FLOW-SIMPLIFICATION
+    ENGINE. A needlessly complex program manifests as bad control and
+    data flow; the same graph that finds flow bugs locates and
+    quantifies needless complexity.
+
+    The division of labor (the load-bearing design decision):
+
+        The TOOL runs compiler passes over the IR that emit
+        OPPORTUNITIES and report the program-graph STATE. It never
+        edits blindly. The AGENT sees the results and decides what to
+        change; the round-trip (§6) regenerates clean code.
+
+    pflow becomes a pass manager whose output is opportunities; the
+    agent is the optimization policy — the role a mechanical compiler
+    cannot fill, and exactly where opinion belongs.
+
+    This is grounded in the compiler-research corpus at
+    ~/work/lafiel/poly/docs/research/ (mq-queryable; 1189 records) and
+    the synthesis notes under pflow/docs/notes/ (poly-adapt-*.md,
+    flow-complexity-metrics, slice-cohesion-refactoring, pdg-slicing,
+    static-analysis-detectors). Every numbered finding below carries a
+    corpus ref so it can be re-dereferenced.
+
+
+2.  Why "flag, don't transform" is the correct architecture (not a compromise)
+
+    Rice's theorem: no analyzer detects all valid simplifications of an
+    arbitrary program [complexity_and_limits.miner:4]. For dynamic
+    Python (getattr/eval/monkeypatching) the dynamic tail is
+    fundamentally beyond static reach. A transform pipeline must be
+    SOUND to be safe; an opportunity reporter only needs to be HONEST.
+
+    pflow's escape: it FLAGS rather than transforms, so it may be
+    incomplete (miss opportunities) as long as it never dresses a
+    heuristic up as a guarantee. The reviewer/agent is the soundness
+    backstop. This also sidesteps the NP-hard/undecidable phase-ordering
+    problem entirely — pflow is not a transform pipeline, only a small
+    analysis-dependency DAG [optimization_theory.miner:32].
+
+    Consequence (binding): every opportunity pflow emits is tagged
+        - MUST (sound: holds on all paths) vs MAY (sound over-approx), and
+        - SOUND vs HEURISTIC (best-effort over Python's dynamic tail).
+    The agent trusts MUST/SOUND as fact and treats MAY/HEURISTIC as a
+    lead to confirm. [lattice_and_abstraction.miner:9,13,50]
+
+
+3.  Representation plan (best representation per analysis)
+
+    3.1  The structural keystone: ONE monotone-dataflow solver.
+
+         Every synthesis independently converged here. Refactor the
+         ad-hoc gen/kill in analysis/dataflow.py into a single driver
+
+             solve(cfg, lattice, transfer, direction) -> per-point facts
+
+         parameterized by a Lattice protocol (top/bottom/join/leq,
+         optional widen) and a Transfer protocol. Reaching-definitions
+         becomes its first client; liveness, definite-assignment,
+         nullness, constant-prop are then ~50-line clients each.
+         [Kildall + Kam-Ullman: lattice_and_abstraction.miner:15,13,85]
+
+         The corpus's real gift is STRUCTURAL (one lattice-parameterized
+         solver), not a pile of fancy abstract domains. The fancy
+         domains are for affine-loop compilers; pflow is on the wrong
+         side of Rice for them (§7).
+
+    3.2  The representation keystone: control-dependence -> full PDG.
+
+         pflow today slices over DATA edges only, so a backward slice
+         drops the predicates that select a value (demonstrated: the
+         slice of `z` in `if cond: z=1 else: z=2; return z` omits
+         `cond`). RFC-0001 §8/§15.5 promised "data edges plus control
+         dependence"; it is unimplemented.
+
+         Fix: compute control dependence from the post-dominator tree
+         pflow already has (Ferrante-Ottenstein-Warren 1987), union with
+         def-use to form the Program Dependence Graph; slicing becomes
+         PDG reachability (linear, Ottenstein-Ottenstein 1984). This is
+         the prerequisite for correct slices, decomposition (§5), and
+         structural clone detection. NOTE: the poly corpus has NO PDG/
+         control-dependence material (it is affine-compilation centered);
+         grounding is pflow/docs/notes/{pdg-slicing,slice-cohesion}.
+
+    3.3  Representation-fit (what to build vs borrow vs skip).
+
+         CFG + dominators/post-dominators ....... HAVE  (control, loops)
+         def-use / reaching-defs ................ HAVE  (value flow)
+         PDG (control+data dependence) .......... BUILD §3.2 (slice, decomp, clones)
+         monotone lattice solver ................ BUILD §3.1 (all dataflow)
+         SSA / gated-SSA ........................ LATER, optional sharpening; fights
+                                                  Python attrs/subscripts/globals; not
+                                                  a prerequisite (def-use is "good enough")
+         VSDG / RVSDG, e-graphs ................. §6 only (transform + regenerate)
+         polyhedral / iteration domains ......... SKIP (§7)
+
+
+4.  Pass catalog (opportunities), tiered by value × soundness × low effort
+
+    Each pass emits ref-tagged opportunities + the relevant graph state.
+
+    TIER 1 — sound, cheap, build first
+      - Dead store / dead variable (liveness, backward solver client).
+        THE standout: a real gap — pyflakes F841 / pylint W0612 do NOT
+        do liveness (only "never referenced"); they miss "last write
+        before return is unread" [static-analysis-detectors:11,51;
+        pylint #5838]. Mirror of reaching-defs. Effort S once §3.1 lands.
+      - Unreachable block / dead branch (CFG reachability — pflow nearly
+        has it in walk.py/paths.py). Structurally sound. Effort S.
+      - Use-before-def / possibly-unbound (definite-assignment, a MUST
+        analysis: 3-point per-variable lattice, no widening). Catches the
+        UnboundLocalError class incl. the read-in-finally case NO Python
+        tool solves [detectors GAPS; lattice_and_abstraction.miner:85,50].
+        Effort S once §3.1.
+      - Redundant / always-taken branch (literal + "reaching this elif
+        implies the if was false"). High precision. Effort S-M.
+
+    TIER 2 — high value, medium effort
+      - Function decomposition / split-point (the "splitting functions"
+        pass): decomposition slicing [slice-cohesion:1], slice-based
+        cohesion (Tightness/Coverage/Overlap, SFC/WFC) [:2,:48], pairwise
+        output-variable grouping to find the thinnest seam [:18,:49],
+        Tuck Wedge/Split/Fold for the extraction shape [:9]. Emits "this
+        function computes N weakly-related outputs; split at <seam>".
+      - Dependence classification: RAW/WAR/WAW as set intersections over
+        def-use [computation_theory.miner:26,44]. WAR/WAW = false deps →
+        emit "rename to break brittle ordering". Loop-carried vs
+        loop-independent via CFG back-edge. SCC over the dependence graph
+        (Tarjan): carried-RAW SCC = irreducible recurrence; WAR/WAW-only
+        cluster = extraction/rename candidate.
+      - Dependence clusters: large mutually-dependent groups = "hard to
+        simplify"; >50% of programs have a single global variable causing
+        a cluster [slice-cohesion:12,13,37] — ties directly to pflow's
+        state map. Emit "this global/attr is the linchpin; thread it".
+      - Complexity hotspots: essential complexity (unstructuredness,
+        T1/T2 reduction), cognitive complexity (nesting-weighted),
+        DepDegree (per-statement data deps), live-range span
+        [flow-complexity:2,3,6,8]. Localize and quantify what to simplify.
+      - Constant / copy propagation -> dead-branch + inline hints. Hedge:
+        non-distributive, MFP<MOP, so sound but incomplete
+        [lattice_and_abstraction.miner:13,71].
+      - Nullness / optional ("may be None here", MAY analysis with guard
+        refinement). Python's #1 crash class. Effort M.
+
+    TIER 3 — heuristic / frontier / later
+      - Clone / reuse / reimplementation: structural PDG-subgraph hashing
+        for near-duplicate candidates (Komondoor-Horwitz, GPLAG style);
+        semantic (Type-4) equivalence is undecidable -> surface
+        CANDIDATES only. NOT corpus-grounded (knowledge-sourced).
+      - CSE / GVN / available expressions: Python side effects make
+        availability undecidable; only a syntactic, clearly-heuristic
+        hint is worth it [optimization_theory.miner:81].
+      - SSA: optional sharpening, not a prerequisite (§3.3).
+      - LICM, type-state (use-after-close), intervals: defer.
+
+
+5.  Function decomposition pass (worked, since it is the simplify flagship)
+
+    From slice-cohesion-refactoring.miner record 49 (algorithm) +48
+    (formulas), adapted to pflow's PDG (§3.2):
+
+      1. For each output (return value, mutated param/attr, side-effecting
+         call), compute its backward slice over the PDG.
+      2. Build the decomposition-slice graph: nodes = per-output slices,
+         edges = non-empty intersection [slice-cohesion:1].
+      3. Components with no/thin edges = independently extractable
+         computations -> the natural split seams.
+      4. Score the function: Tightness = |intersection of all slices|/|stmts|;
+         low tightness + multiple weakly-coupled components = "does N
+         things, split it" [:2,:4].
+      5. Emit each extractable group as an opportunity with the SESE
+         region and the data crossing the seam (the new function's params).
+    The agent decides which splits are worth it and (via §6) performs them.
+
+
+6.  The round-trip — regenerate clean code (the differentiator)
+
+    Not in the poly corpus (its round-trip is CLooG affine-loop codegen);
+    knowledge-sourced, and the research frontier. The honest near-term:
+
+      Near-term (verify, don't auto-generate): the AGENT proposes a
+      transform (split, inline, de-nest, dead-code removal); pflow
+      VERIFIES it preserves flow (same output slices / def-use) and
+      measurably reduces complexity (§4 hotspot metrics drop). Only
+      narrow, provably-sound transforms (remove unreachable block, inline
+      a single-use thin alias, flatten a guard) are auto-applied.
+
+      Longer-term (full regeneration): control-flow structuring to emit
+      goto-free structured code (relooper / "no more gotos" lineage),
+      SSA destruction done cleanly, and e-graph extraction — represent
+      many equivalent forms, extract the cleanest by a READABILITY cost
+      function (the opinionated agent supplies the cost). This is what a
+      VSDG/RVSDG representation is for; revisit when Tier 1-2 are proven.
+
+
+7.  Non-goals / explicit skips (corpus-grounded, so we don't re-litigate)
+
+      - Polyhedral model (iteration domains, affine schedules, exact ILP
+        dependence): affine/static-shape only; static coverage ~10% of
+        general programs, lower for dynamic code [polyhedral_compilation.
+        miner:84,50]; dynamic shapes a FUNDAMENTAL limit [:102]; exact
+        dependence undecidable off the affine path; even Pluto's author
+        abandoned full ILP (poly synthesis L4 §2.1). One transferable
+        lesson only: when independence can't be proven, assume dependence.
+      - Widening/narrowing domains (intervals, octagons, polyhedra,
+        Karr): affine-compiler machinery; every Tier-1 analysis is
+        finite-height and needs no widening [lattice_and_abstraction.
+        miner:8,60]. Build the widen HOOK on the solver (cheap
+        non-termination guard); don't prioritize a widening domain.
+      - Strength reduction: micro-perf, not a "flow is simpler" signal.
+      - SSA-first: see §3.3.
+
+
+8.  Build sequence
+
+      Phase A (foundation):
+        A1. [DONE 2026-05-29] Monotone-dataflow solver (§3.1):
+            analysis/solver.py solve(graph, direction, init, boundary, meet,
+            transfer); reaching-defs re-expressed on it (identical results,
+            64 tests); liveness is a second client.
+        A2. [DONE 2026-05-29] Control-dependence edges -> PDG (§3.2);
+            slice/walk include control-dependence so backward slices contain
+            controlling predicates. analysis/control_dependence.py (FOW from
+            the post-dominator tree); wired into walk (`c>` edges) + cli
+            _enrich; test_backward_slice_includes_control_dependence.
+        A3. [DONE 2026-05-29] MUST/MAY + SOUND/HEURISTIC tagging:
+            analysis/opportunities.py Opportunity carries modality + soundness;
+            rendered on every finding.
+        A4. [DONE 2026-05-29] Pass-runner surface: `pflow opportunities <target>`
+            runs run_passes() and emits ranked, ref-tagged, soundness-tagged
+            opportunities. Works on a function (file.py:func), a file, or a
+            DIRECTORY (program-level — builds the cached program graph, runs all
+            passes over every function, groups + ranks by-pass).
+
+      Phase B (Tier-1 passes): all wired into run_passes / `pflow opportunities`.
+        - dead-store/liveness ......... DONE (analysis/liveness.py) — the gap
+          pyflakes/pylint miss.
+        - unreachable ................. DONE (analysis/reachability.py) — SOUND.
+        - use-before-def .............. DONE (analysis/definite_assignment.py) —
+          a forward MUST (intersection) analysis; catches the read-in-finally
+          possibly-unbound case no mainstream Python tool solves (verified on
+          the gnarly `state` case). KNOWN LIMITATION: exception edges are
+          block-granular, so an exception mid-statement BEFORE a store in a
+          SINGLE-block try body is not modeled — the finally case is caught
+          only when a control construct (with/if/loop) precedes the store
+          (the realistic case). Per-op exception precision is a future
+          refinement; honest because tagged heuristic/may.
+        - redundant/dead-branch ....... DONE (analysis/redundant_branch.py) —
+          literal/constant `if` conditions, SOUND; needs cfg construct markers.
+
+      Phase C (Tier-2):
+        - complexity hotspots ......... DONE (analysis/complexity.py): cyclomatic,
+          cognitive (nesting-weighted), max_nesting, depdegree, live-span; flagged
+          over thresholds + shown by `pflow metrics`. (Bug #4 found by dogfooding:
+          dominator-based nesting counted SEQUENTIAL branches as nested; fixed by
+          requiring bid to be inside X's merge.) Essential complexity omitted
+          (Python CFGs are reducible; essential ~1).
+        - decomposition/split (§5) ... DONE (analysis/decomposition.py): slice
+          each output over the PDG, group by overlap; flag functions computing
+          >=2 disjoint SUBSTANTIAL output groups as split candidates with the
+          seams + tightness. Conservative (skips dunders/small/trivial groups —
+          Bug #5 found by dogfooding: it false-positived on __init__ & tiny
+          methods). LIMITATION: op-granularity means independent elements of a
+          single `return (p, q)` aren't separated; multi-output/side-effect
+          functions are.
+        - dependence classification + clusters .... DEFERRED. overloaded-variable
+          (analysis/dependence.py) built + tested but NOT wired: dogfooding (Bug
+          #6) showed a high FP rate — a value threaded through a transformation
+          pipeline (`x=f(x); x=g(x)`) and a loop-var reused across loops both
+          look like disjoint def-use groups. Needs semantic judgment beyond
+          def-use; kept for refinement. (FP discipline > coverage.)
+        - constant-prop ............... DONE (analysis/const_prop.py): forward
+          solver client over `x = <literal>` assignments; flags `if <const-var>:`
+          as always-taken (extends redundant-branch). SOUND (reports only
+          all-path facts), incomplete (no copy/computed/mutated tracking).
+        - nullness .................... DEFERRED. A useful "may be None here"
+          MUST need edge-sensitive guard narrowing (`if x is not None:` refines
+          the true-branch); the block-in/out solver isn't edge-sensitive, and a
+          version without narrowing is a false-positive magnet on every checked
+          Optional. Needs an edge-sensitive solver first (future). (Same FP
+          discipline that deferred dependence — a stable version ships no noise.)
+
+      Phase D (round-trip §6):
+        - transform verification ...... DONE (analysis/verify.py, `pflow verify
+          old new`): checks a proposed refactor (1) preserves each output's
+          external-input dependence set (conservative flow-equivalence proxy,
+          not a proof) and (2) does not increase complexity. Verdict: SAFE+SIMPLER
+          / SAFE / BEHAVIOR-MAY-HAVE-CHANGED. This is the agent-proposes-tool-
+          verifies loop.
+        - structured regeneration (relooper / "no more gotos" / e-graph
+          extraction) ... DEFERRED to a future RFC (RFC-0003): emitting clean
+          source from a transformed representation is the research frontier; the
+          verify-a-transform form above is the trustworthy near-term substitute.
+
+      Agent + docs updated each phase so the reviewer drives the new passes;
+      golden tests lock each pass; honesty tags keep the trust boundary true.
+
+      Validation by dogfooding (2026-05-29): running `pflow opportunities`
+      over pflow itself flagged 181 findings — ~96% false positives that
+      exposed three real analysis bugs, since the toy tests had no closures/
+      comprehensions/subscript-stores to trigger them:
+        A. nested `def` statements were recursed into the enclosing CFG
+           (inlining the nested body, disconnecting the real one) — they are
+           now a single name-binding op whose uses include the def's
+           decorators/defaults and the enclosing names its body captures
+           (so closure-captured locals aren't seen as dead). cfg.py.
+        B. comprehension/generator/lambda loop vars leaked as enclosing-scope
+           uses (false use-before-def) — _extract_uses is now scope-aware. cfg.py.
+        C. subscript/attribute STORE targets didn't count their index/base as
+           reads (`m[i]=v` missed m,i) — _target_uses added. cfg.py.
+      After the fixes: 181 -> 7, all 7 genuine dead stores in pflow's own code
+      (incl. a correct overwritten-before-read case), which were then removed
+      -> pflow now reports 0 opportunities on itself. 84 tests; regressions
+      locked (test_nested_def_does_not_corrupt_cfg, comprehension/subscript/
+      closure tests). Lesson: precision must be validated on idiomatic code,
+      not toy functions — the <10% false-positive bar (Tricorder) is real.
+
+      Metric-noise hardening (2026-05-29, found by the flow-graph-reviewer agent
+      reviewing an external service): the complexity pass was noisy on real code
+      even though its logic was "correct" — the noise came from the CFG's
+      conservative exception model leaking into the metrics. Three fixes:
+        1. Cyclomatic counted pflow's per-block may-throw edges, so a branchless
+           `with` scored 8 and an exception-heavy `wait_for_ssh` scored 12 (vs 4
+           real). Now it counts SOURCE decisions only: normal-successor fan-out +
+           one per `except` handler + 1. complexity.py.
+        2. max_nesting/cognitive used raw dominator depth, so elif/else-if and
+           match-dispatch chains (each branch nested in the prior's else in the
+           CFG) read as deeply nested — auth/validator/dispatch functions were
+           flagged purely on shape. Now nesting counts a branch only if the use
+           is in its TRUE/body branch (first successor dominates it), which keeps
+           real nesting (loops, then-body ifs) but flattens elif/dispatch.
+        3. Added max_live_span (def->last-use distance) and depdegree as the
+           data-density signal, with max_live_span a hotspot trigger. On the
+           reviewed service it cleanly separated genuine decomposition targets
+           (live_span 44-73: a config parser, the entrypoint, a metrics
+           formatter) from intrinsically-branchy-but-cohesive code (live_span
+           <25). The pass now leads with live_span; branch-shape findings are
+           tagged "(may be intrinsic; check live_span)". cognitive threshold
+           raised 15->25, cyclomatic 10->12 to match accurate counting.
+        4. Use-before-def false-positived on a value assigned inside a plain
+           `with` and read after it: the body's may-throw edges ran into the
+           synthetic __exit__/post-with block, so MUST-assignment saw an
+           unbound path. But a non-suppressing context manager re-raises, so
+           that path can't reach post-with code. Fixed by NOT adding
+           body->cleanup exception edges for `with` (the synthetic __exit__
+           defines/uses no user variable; an enclosing `try` still wires body
+           exceptions to its handlers/finally, so the headline finally-read
+           detection is intact). Trade: a *suppressing* manager
+           (contextlib.suppress) is no longer covered — rare, documented. cfg.py.
+      Result on the reviewed service: ~12 metric "artifacts" -> 0; complexity
+      findings collapsed to a clean set centred on the data-density signal; the
+      use-before-def FP gone. 98 tests; regressions locked
+      (test_with_body_falls_through_to_cleanup_without_exception_pollution,
+      test_nesting_distinguishes_sequential_from_nested). Lesson #2: a metric can
+      be arithmetically correct yet noisy because its INPUT (the CFG) is
+      conservative — validate metrics on real code and separate flow-SHAPE from
+      flow-DENSITY, because only density reliably means "decompose."
+
+      SOUND/MUST tier false positive (2026-05-29, agent reviewing two seeker
+      branches): the unreachable-code pass — the one tier billed as ground-truth
+      "fact" — false-positived ~12-16 times per service on the lock-guarded
+      accessor idiom `with self._lock: return X` (also `with urlopen(u) as r:
+      return r.read()`). pflow lowers a `with` into a body block plus a separate
+      cleanup block holding the synthetic `exit_with` (__exit__). When the body
+      returns on every path, the body block has no normal fall-through, and
+      (after the use-before-def fix above removed the body->cleanup exception
+      edges) the cleanup had no predecessor at all — so the pass flagged it
+      "unreachable code — remove it", pointing at the `with` line, with nothing
+      deletable there. A no-successor orphan also polluted exit_blocks. Two
+      complementary fixes:
+        - cfg.py: build the with-cleanup block ONLY when the body falls through.
+          When control is closed on every path (returned/raised), emit no
+          cleanup block and leave control closed — code after the `with` is then
+          correctly dead (and a genuine dead statement there is still flagged,
+          pointing at the statement, not the `with`).
+        - reachability.py: never flag a block whose only sourced ops are
+          SYNTHETIC (exit_with / enter_finally / ...). There is nothing for a
+          human to remove, so it cannot be a real unreachable-code finding. This
+          is the "even the fact tier needs a with/try sanity check" guard.
+      Result: with-return idioms -> 0 unreachable findings on both branches;
+      genuine dead code still flagged (true positive preserved). 100 tests;
+      regressions locked (test_with_returning_on_all_paths_is_not_unreachable,
+      test_real_dead_code_after_with_still_flagged). Lesson #3: "sound" is a
+      claim about the ANALYSIS, not the LOWERING — a structurally-correct
+      reachability result is still a false positive when the CFG models a
+      synthetic cleanup as deletable user code. Soundness tiers must be
+      validated on idiomatic code too, and findings must point only at
+      real, removable source.
+
+      Real-world corpus harness (2026-05-29): the recurring theme above — every
+      shipped FP was found only on idiomatic code, never by the toy unit tests —
+      got a standing guard. tests/test_corpus.py runs the full opportunity
+      pass-runner over a frozen snapshot of real CPython stdlib (contextlib,
+      queue, textwrap — ~1,670 lines exercising with/lock/try-finally/
+      generators/comprehensions/recursion; see fixtures/corpus/PROVENANCE.md)
+      and pins the normalized findings to a golden file. New findings (candidate
+      FPs) or lost findings (candidate lost TPs) fail with a diff; the
+      [sound/must] "fact" tier gets a second, emphatic guard. It paid for itself
+      on the first run: 0 sound/must findings over 1,670 lines (confirming the
+      with-idiom fix — contextlib/queue are full of `with self._lock: return`),
+      but it caught a real correctness bug the 100 toy tests had missed —
+      `assert test` and `del d[k]` fell through to generic_visit and recorded NO
+      uses, so a value read only by an assert (ExitStack.__exit__: `assert
+      is_sync`) was a false dead-store, and `del d[k]` falsely flagged d and k
+      dead. Fixed with visit_Assert / visit_Delete (cfg.py); regressions locked
+      (test_assert_expression_counts_as_use,
+      test_delete_subscript_counts_base_and_index_as_use). After the fix the
+      corpus shows 5 findings, all genuine heuristic/may leads (a truly-unused
+      tuple-unpack target in suppress.__exit__; the intrinsically-complex
+      TextWrapper._wrap_chunks). Lesson #4: a tool that asserts "truth" needs an
+      empirical FP guard on real code in-tree — the unit tests certify behavior
+      on shapes you thought of; the corpus certifies the absence of noise on
+      shapes you didn't.
+
+      Exception-precision investigation — REJECTED a fix the corpus caught
+      (2026-05-29): the one known residual FP is the try/finally post-block
+      use-before-def. A value assigned in a multi-block try body (e.g. one
+      containing a `with`) and read after the try is flagged possibly-unbound,
+      because an early body block's exception edge into the single finally
+      region drops the value from the finally's definite-assignment, and that
+      leaks past the finally into the post-try code (which is only reached on
+      normal completion). The principled fix is finally DUPLICATION (a
+      normal-completion copy that flows to post-try code; an exception copy that
+      propagates). It was implemented — and the corpus harness immediately
+      failed with FOUR new [sound/must] findings: for `try: raise X finally:
+      cleanup()` (which appears twice in stdlib contextlib) the body always
+      raises, so the normal copy is unreachable and its real `cleanup()`
+      statements were flagged as dead code; the doubled finally ops also pushed
+      two functions over a complexity threshold. Net: duplication trades a rare
+      FP (never seen on the corpus or on seeker) for a COMMON one, plus metric
+      inflation. Reverted. The post-try FP stays a documented heuristic/may
+      limitation; a clean fix needs edge-sensitive (per-successor) dataflow, not
+      duplication — deferred. Also concluded: pruning the over-approximate
+      exception edges (the other "precision" idea) is the WRONG move for a
+      soundness-first tool — an absent except edge soundly means "cannot raise
+      here"; making the edges sharper makes them less sound. The
+      over-approximation is a feature; the fix is to stop it LEAKING (cyclomatic
+      no longer counts it; with-cleanup no longer continues from it), not to
+      remove it. Lesson #5: the empirical guard is what lets you try an
+      aggressive fix safely — it caught a net-negative change in one run, before
+      it ever reached a real review. A precision fix that isn't measured on real
+      code is a coin flip.
+
+
+9.  Success criteria
+
+      - The agent, reviewing a tangled function, runs `pflow opportunities`
+        and receives ranked, ref-tagged, soundness-tagged opportunities
+        (dead vars, split seams, redundant branches, hotspots) it can act
+        on — without hand-reconstructing any of it.
+      - A proposed refactor can be checked: pflow confirms the flow graph
+        got measurably simpler AND the output slices are unchanged.
+      - When reviewers treat a pflow "split here / this is dead / reuse X"
+        opportunity the way they treat a compiler warning — but with taste
+        applied by the agent — the engine has succeeded.
+
+                              End of RFC2

@@ -1,0 +1,7 @@
+MINER_DUMP
+topic: IR/graph-representation to clean structured human-readable source code — control-flow structuring, goto elimination, decompiler structuring, SSA destruction, e-graphs/equality saturation, Sea-of-Nodes/RVSDG scheduling, polyhedral code generation
+depth: 3
+date: 2026-05-29
+status: IN_PROGRESS
+record_count: 0
+<<<END>>>

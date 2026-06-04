@@ -1,0 +1,756 @@
+MINER_DUMP
+topic: LLM/agentic code-review systems integrating static program analysis (CFG/dataflow/taint) for defect detection and presentation
+depth: 2
+date: 2026-05-29
+status: IN_PROGRESS
+record_count: 0
+<<<END>>>
+
+SOURCE
+id: 1
+ts: 2026-05-29T00:01:00Z
+relevance: HIGH
+title: About data flow analysis - CodeQL
+authors: GitHub/CodeQL team
+year: 2024
+venue: codeql.github.com (official documentation)
+quality: DOCS
+url: https://codeql.github.com/docs/writing-codeql-queries/about-data-flow-analysis/
+keywords: CodeQL, dataflow, taint tracking, source, sink, sanitizer, barrier, global dataflow, local dataflow, path-problem
+cites:
+cited_by:
+content:
+  Data flow graph nodes represent semantic elements carrying values at runtime (distinct from AST nodes).
+  Edges represent how data flows between program elements.
+  LOCAL dataflow: edges between nodes in the SAME function; faster, lower memory.
+  GLOBAL dataflow: tracks across function boundaries, through object properties; higher cost.
+  NORMAL dataflow: preserves exact values end-to-end.
+  TAINT TRACKING: extends dataflow; includes steps where values are not preserved but
+    "potentially insecure object is still propagated."
+  Configuration predicates:
+    isSource(Node n) — marks source nodes
+    isSink(Node n) — marks sink nodes
+    isBarrier(Node n) — unified sanitizer/barrier for both taint and dataflow configs
+    isAdditionalFlowStep(Node n1, Node n2) — adds custom edges
+  Query format for path output:
+    @kind path-problem metadata tag required
+    MyFlow::flowPath(source, sink) predicate reports flow paths
+    SELECT includes: sink node, source path node, sink path node, descriptive text
+  Limitations acknowledged: unavailable source code, runtime-determined behavior,
+    variable aliasing, computational complexity.
+  Flow state labels (FlowLabel / FlowState) allow distinguishing taint kinds along a path.
+<<<END>>>
+
+SOURCE
+id: 2
+ts: 2026-05-29T00:01:30Z
+relevance: HIGH
+title: Taint analysis overview - Semgrep
+authors: Semgrep team
+year: 2024
+venue: semgrep.dev (official documentation)
+quality: DOCS
+url: https://semgrep.dev/docs/writing-rules/data-flow/taint-mode/overview
+keywords: Semgrep, taint, dataflow, source, sink, sanitizer, propagator, YAML, interfile, cross-file, taint trace
+cites:
+cited_by:
+content:
+  Rule structure requires mode: taint in YAML.
+  Operators:
+    pattern-sources (required): patterns identifying tainted data origins
+    pattern-sinks (optional): vulnerable function call patterns
+    pattern-sanitizers (optional): patterns marking cleaned data
+    pattern-propagators (optional): explicit taint propagation rules;
+      require 'from' and 'to' metavariable fields
+  Source configuration options:
+    exact: true/false (default false) — whether subexpressions count as sources
+    by-side-effect: true/false (default false) — side-effect-based tainting
+    control: true/false (Pro feature) — control flow sources
+  Sink options differ: default exact: true (subexpressions not auto-flagged).
+    at-exit: Pro feature, restricts detection to exit points.
+  Findings: "accompanied by a taint trace that explains how the taint flows from source to sink."
+  Deduplication: one representative trace per sink reported even when multiple paths exist.
+  Interprocedural (Pro): --pro-intrafile (within files) or --pro with interfile: true (across files).
+  No confidence/severity fields documented in this page.
+  Version 1.92.0 (2024-10-17): added Pro support to track taint through callbacks leading to a sink.
+<<<END>>>
+
+SOURCE
+id: 3
+ts: 2026-05-29T00:02:00Z
+relevance: HIGH
+title: Pysa (Static Analysis for Security) — Basics
+authors: Meta/Facebook Pyre team
+year: 2020 (ongoing)
+venue: pyre-check.org (official documentation)
+quality: DOCS
+url: https://pyre-check.org/docs/pysa-basics/
+keywords: Pysa, taint analysis, Python, source, sink, sanitizer, TaintSource, TaintSink, TaintInTaintOut, .pysa model files, taint.config, interprocedural
+cites:
+cited_by:
+content:
+  Two config file types:
+    taint.config (JSON): declares source kinds, sink kinds, features, rules
+    .pysa model files: annotate code with source/sink/sanitizer roles
+  Location: taint_models_path in .pyre_configuration
+  Source declaration (taint.config):
+    {"sources": [{"name": "Cookies", "comment": "..."}]}
+  Annotation in .pysa:
+    TaintSource[SOURCE_NAME] on function returns, class attributes, or whole classes
+  Sink annotation:
+    TaintSink[SINK_NAME] on function parameters and attributes
+  Path annotation for indexable types:
+    ReturnPath[_[0][1]] for nested list/tuple indexes
+    ReturnPath[_["a"]] for dict keys
+  Sanitizer annotations:
+    @Sanitize — clears all taint
+    @Sanitize(Parameters) — all arguments sanitized
+    @Sanitize(TaintInTaintOut) — prevents taint propagation through returns
+    Sanitize[TaintSource[UserControlled]] — specific source type
+    Sanitize[TaintInTaintOut[TaintSink[SQL]]] — TITO with specific sinks
+  TaintInTaintOut propagation:
+    TaintInTaintOut[LocalReturn] — tainted args produce tainted returns
+    TaintInTaintOut[Updates[PARAMETER]] — param updates from tainted data
+  Rules in taint.config:
+    {
+      "name": "SQL injection.",
+      "code": 1,
+      "sources": ["UserControlled"],
+      "sinks": ["SQL"],
+      "message_format": "Data from [{$sources}] source(s)..."
+    }
+    Each rule: unique code, source/sink lists, message templates with {$sources}/{$sinks} vars.
+  Interprocedural scope: only analyzes repository code + search_path directories.
+    External dependencies without source: assumes function returns inherit taint from inputs
+    (can cause false positives).
+  "When an object is tainted, all attributes of that object are also tainted" — known FP source.
+  Model requirements: fully qualified names, signature must match Pyre's understanding exactly,
+    type annotations must be completely removed from .pysa files.
+<<<END>>>
+
+SOURCE
+id: 4
+ts: 2026-05-29T00:02:30Z
+relevance: HIGH
+title: IRIS: LLM-Assisted Static Analysis for Detecting Security Vulnerabilities (arXiv 2405.17238)
+authors: (from abstract page)
+year: 2024
+venue: arXiv preprint
+quality: PREPRINT
+url: https://arxiv.org/abs/2405.17238
+keywords: IRIS, LLM, static analysis, taint specification inference, CodeQL, vulnerability detection, CWE-Bench-Java, neuro-symbolic
+cites: CodeQL
+cited_by:
+content:
+  Approach: neuro-symbolic combining LLMs with static analysis for whole-repository vulnerability detection.
+  Problem addressed: static analysis tools rely on human-labeled taint specs; LLMs can't do
+    complex reasoning over code for vulnerability detection at repository scale.
+  Architecture:
+    LLMs infer taint specifications (source/sink annotations) — reduces dependence on human-written rules.
+    Static analysis performs contextual examination of code using inferred specs.
+  Benchmark: CWE-Bench-Java — 120 manually validated security vulnerabilities from production Java projects.
+  Results:
+    CodeQL baseline: detected 27/120 vulnerabilities.
+    IRIS with GPT-4: detected 55/120 vulnerabilities (+28 improvement, ~2x baseline).
+    False discovery rate: 5 percentage point improvement over CodeQL baseline.
+    Novel findings: 4 previously unknown vulnerabilities identified.
+  Key insight: LLMs infer specs; static analysis verifies paths — division of labor cuts hallucinations.
+<<<END>>>
+
+SOURCE
+id: 5
+ts: 2026-05-29T00:03:00Z
+relevance: HIGH
+title: Lessons from Building Static Analysis Tools at Google (CACM 2018)
+authors: Caitlin Sadowski, Edward Aftandilian, Alex Eagle, Liam Miller-Cushon, Ciera Jaspan
+year: 2018
+venue: Communications of the ACM, Vol. 61 No. 4
+quality: PEER-REVIEWED
+url: https://cacm.acm.org/research/lessons-from-building-static-analysis-tools-at-google/
+keywords: Tricorder, Google, static analysis, false positive, code review, developer experience, suppression, feedback, 10% rule
+cites:
+cited_by: widely cited in static analysis UX literature
+content:
+  Key false positive metrics:
+    Overall effective false-positive rate for Tricorder: just below 5%.
+    Code review checks: allowed up to 10% effective false positives.
+    Compiler-time checks: stricter threshold (lower than code review).
+  False positive definition: "any report [users] did not want to see" — user-centric, not purely technical.
+  UI mechanism: "NOT USEFUL" button on findings in code review; continuous monitoring of rates.
+  Tricorder scope: 30+ languages; syntactic style checks; compiler-informed checks for Java/JS/C++.
+  Integration point: results shown during code review (not as blocking gate).
+  Key lesson: showing results at code review time (not build time) dramatically improves fix rate.
+  Developer buy-in: analyzers must maintain <10% FP rate or they get turned off.
+  Suppression mechanism: per-finding suppression with rationale; feeds back to analyzer teams.
+  Fix-it ergonomics: automated fix suggestions shown alongside findings; one-click apply.
+  Source: PDF also at https://6826.csail.mit.edu/2020/papers/google-analysis-cacm.pdf
+<<<END>>>
+
+SOURCE
+id: 6
+ts: 2026-05-29T00:03:30Z
+relevance: HIGH
+title: GitHub Copilot Autofix for Code Scanning — About
+authors: GitHub team
+year: 2024
+venue: docs.github.com (official documentation)
+quality: DOCS
+url: https://docs.github.com/en/code-security/concepts/code-scanning/copilot-autofix-for-code-scanning
+keywords: Copilot Autofix, CodeQL, SARIF, LLM, fix suggestion, code scanning, security alert, pull request
+cites: CodeQL
+cited_by:
+content:
+  Mechanism: code scanning alerts → input to LLM → LLM generates fix + explanation.
+  Data sent to LLM: CodeQL alert data in SARIF format + code snippets around each source location.
+  Fix workflow:
+    "Generate fix" button on alert in GitHub Advanced Security (GHAS).
+    LLM returns explanation + code suggestion.
+    "Create PR with fix" button creates new PR with code changes.
+  Supported languages: C#, C/C++, Go, Java/Kotlin, Swift, JavaScript/TypeScript, Python, Ruby, Rust.
+  Supported query suites: default and security-extended CodeQL query suites.
+  Key stat from blog post: "secure code more than three times faster with Copilot Autofix."
+  Model: "GPT-5.3-Codex" mentioned in one search result (may be inaccurate/outdated — treat with caution).
+  Architecture: static analysis (CodeQL) finds alert + path → LLM proposes fix; not LLM finding bugs.
+<<<END>>>
+
+SOURCE
+id: 7
+ts: 2026-05-29T00:04:00Z
+relevance: HIGH
+title: Amazon CodeGuru Reviewer — Static Analysis and Dataflow
+authors: AWS team
+year: 2020-2024
+venue: aws.amazon.com (official documentation and blog)
+quality: DOCS
+url: https://docs.aws.amazon.com/codeguru/latest/reviewer-ug/welcome.html
+keywords: CodeGuru, dataflow, source-to-sink, interprocedural, GQL, Guru Query Language, security, Java, Python
+cites:
+cited_by:
+content:
+  Uses automated reasoning to analyze data flow from source to sink across multiple functions.
+  Detects: security vulnerabilities, secrets, resource leaks, concurrency issues,
+    incorrect input validation, AWS API/SDK best practice deviations.
+  Specific vulnerability classes: SQL injection, buffer overflows, insecure deserialization.
+  Java inconsistency detection: 12 types including typos, inconsistent messaging/logging/declarations,
+    missing API calls, missing null checks, missing preconditions, missing exceptions.
+  Rule engine: Guru Query Language (GQL) — internally used rule-authoring toolkit.
+  GQL optimizations: caching, indexing, customization of dataflow specification.
+  Languages: Java and Python.
+  Integration: GitHub, Bitbucket, CodeCommit pull requests.
+  Finding presentation: inline pull request comments.
+  Combines program analysis + machine learning for defect detection.
+<<<END>>>
+
+SOURCE
+id: 8
+ts: 2026-05-29T00:04:30Z
+relevance: HIGH
+title: Advanced Technologies Behind Snyk Code (DeepCode engine)
+authors: Snyk team
+year: 2021-2024
+venue: snyk.io blog
+quality: INDUSTRY
+url: https://snyk.io/blog/advanced-technologies-behind-snyk-code/
+keywords: Snyk Code, DeepCode, AST, event graph, taint analysis, interprocedural, AI, symbolic AI, neural network, dataflow
+cites: DeepCode
+cited_by:
+content:
+  Core technology: DeepCode AI engine (acquired end of 2020).
+  Training: ML system trained on millions of open-source code commits.
+  Representation: Abstract Syntax Tree (AST) + Event Graph (EG).
+    EG enables data-flow-sensitive, context-aware analysis.
+  Method: combination of symbolic AI + neural networks.
+  Symbolic AI: understands data flow patterns, taint propagation, code semantics.
+  Neural networks: pattern matching against learned vulnerability models.
+  Scan unit: parses file → analyzes data flow between variables/functions → 
+    compares against vulnerability models.
+  Interprocedural: tracks tainted data across function boundaries and files.
+  Scan speed: typically under 1 minute for most repositories.
+  Not purely regex/pattern-based; semantic understanding of taint propagation.
+  Contextual dataflow improvement (2024 post): "Analyze Taint Analysis Faster with 
+    Improved Contextual Dataflow in Snyk Code"
+    URL: https://snyk.io/blog/analyze-taint-analysis-contextual-dataflow-snyk-code/
+<<<END>>>
+
+SOURCE
+id: 9
+ts: 2026-05-29T00:05:00Z
+relevance: HIGH
+title: SonarQube False Positive Management and Taint Analysis
+authors: Sonar team
+year: 2026
+venue: sonarsource.com blog
+quality: INDUSTRY
+url: https://www.sonarsource.com/blog/how-sonarqube-minimizes-false-positives
+keywords: SonarQube, false positive, taint analysis, symbolic execution, dataflow, interprocedural, <5%, injection vulnerability
+cites:
+cited_by:
+content:
+  False positive rate (reviewed issues): 3.2% — lower than Google Tricorder's ~5%.
+  Analysis techniques combined:
+    Taint analysis: dataflow across all files and functions.
+    Symbolic execution: simulates real program flows without running program.
+    Combination detects problems "only when they are realistically possible."
+  Integration: GitHub, Bitbucket Cloud, GitLab, Azure DevOps.
+  PR decoration: automated scanning of branches and pull requests.
+  Quality gate: go/no-go failing pipelines when code doesn't meet requirements.
+  Taint vulnerability presentation: documented at
+    https://docs.sonarsource.com/sonarqube-for-vs-code/using/taint-vulnerabilities
+    (VS Code extension shows injection vulnerabilities with flow path)
+  User workflow: mark findings as accepted false positives with documented rationale.
+    Rationale feeds back into rule improvement.
+  IDE integration: taint vulnerabilities shown in VS Code, IntelliJ, Visual Studio extensions.
+<<<END>>>
+
+SOURCE
+id: 10
+ts: 2026-05-29T00:05:30Z
+relevance: HIGH
+title: LLMDFA: Analyzing Dataflow in Code with Large Language Models
+authors: (arXiv 2402.10754)
+year: 2024
+venue: arXiv preprint; presented NeurIPS 2024
+quality: PREPRINT
+url: https://arxiv.org/pdf/2402.10754
+keywords: LLMDFA, LLM, dataflow analysis, few-shot, chain-of-thought, bug detection, precision, recall, hallucination mitigation
+cites:
+cited_by: LLM4PFA (arXiv 2506.10322)
+content:
+  Approach: few-shot chain-of-thought prompting to summarize dataflow facts in individual functions.
+  Goal: align LLMs with program semantics of small code snippets to mitigate hallucinations.
+  Results: 87.10% precision, 80.77% recall.
+    F1 score improvement: up to 0.35 over existing techniques.
+  Presented at NeurIPS 2024, Vancouver.
+  Key insight: decomposing dataflow analysis into function-level summaries that LLM can reason about.
+<<<END>>>
+
+SOURCE
+id: 11
+ts: 2026-05-29T00:06:00Z
+relevance: HIGH
+title: RepoAudit: Autonomous LLM-Agent for Repository-Level Code Auditing
+authors: (arXiv 2501.18160)
+year: 2025
+venue: arXiv preprint
+quality: PREPRINT
+url: https://arxiv.org/pdf/2501.18160
+keywords: RepoAudit, LLM agent, repository-level, dataflow, path feasibility, hallucination mitigation, validator
+cites:
+cited_by:
+content:
+  Explores code repositories on demand.
+  Analyzes data-flow facts along different feasible program paths.
+  Introduces validator to check data-flow facts for hallucination mitigation.
+  Validator also examines path condition satisfiability.
+  Agent-driven: autonomously navigates repository to follow dataflow chains.
+<<<END>>>
+
+SOURCE
+id: 12
+ts: 2026-05-29T00:06:30Z
+relevance: HIGH
+title: Grounded AI for Code Review: Resource-Efficient Large-Model Serving in Enterprise Pipelines
+authors: (arXiv 2510.10290)
+year: 2025
+venue: arXiv preprint
+quality: PREPRINT
+url: https://arxiv.org/pdf/2510.10290
+keywords: grounded AI, code review, static analysis, LLM, enterprise, determinism, hallucination, fix suggestion
+cites:
+cited_by:
+content:
+  Production system: couples determinism of industry-grade static analysis with explanatory power of LLMs.
+  Resource-efficient model serving architecture.
+  Goal: constrain model's reasoning space to reduce hallucinations.
+  Enhances relevance of fix suggestions by grounding in SA findings.
+  Static analysis provides facts; LLM provides explanation/fix — clean division of roles.
+<<<END>>>
+
+SOURCE
+id: 13
+ts: 2026-05-29T00:07:00Z
+relevance: HIGH
+title: Minimizing False Positives in Static Bug Detection via LLM-Enhanced Path Feasibility Analysis (LLM4PFA)
+authors: (arXiv 2506.10322)
+year: 2025
+venue: arXiv preprint
+quality: PREPRINT
+url: https://arxiv.org/html/2506.10322v1
+keywords: LLM4PFA, false positive, path feasibility, null pointer dereference, use-after-free, buffer overflow, LLM+SA
+cites: LLMDFA (2402.10754), LLM4SA
+cited_by:
+content:
+  Target bugs: null pointer dereference, use-after-free, buffer overflow.
+  Approach: LLM checks path feasibility of static analysis alerts to filter false positives.
+  Compared against LLM4SA and LLMDFA baselines.
+  Key insight: SA produces candidate paths; LLM reasons about feasibility to filter FPs.
+<<<END>>>
+
+SOURCE
+id: 14
+ts: 2026-05-29T00:07:30Z
+relevance: HIGH
+title: Enhancing Static Analysis for Practical Bug Detection: An LLM-Integrated Approach (LLift / ACM OOPSLA 2024)
+authors: (dl.acm.org/doi/10.1145/3649828)
+year: 2024
+venue: Proceedings of the ACM on Programming Languages (OOPSLA 2024)
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1145/3649828
+keywords: LLift, LLM, static analysis, bug detection, vulnerability, synergy, use-before-initialization
+cites:
+cited_by:
+content:
+  LLift: synergizes strengths of LLMs and static analysis for vulnerability detection.
+  Access to ACM DL was blocked (403); details from search snippet only.
+  Described as "exploring synergizing strengths of both LLMs and static analysis."
+  Published in ACM OOPSLA 2024 proceedings.
+<<<END>>>
+
+
+SOURCE
+id: 15
+ts: 2026-05-29T00:15:00Z
+relevance: HIGH
+title: LLMDFA: Analyzing Dataflow in Code with Large Language Models — Full Details
+authors: Chengpeng Wang et al.
+year: 2024
+venue: NeurIPS 2024 (Poster); arXiv 2402.10754
+quality: PEER-REVIEWED
+url: https://arxiv.org/abs/2402.10754
+keywords: LLMDFA, LLM, dataflow, compilation-free, few-shot, chain-of-thought, theorem prover, path feasibility, hallucination, bug detection, Android
+cites:
+cited_by: LLM4PFA (arXiv 2506.10322)
+content:
+  Problem: traditional dataflow analysis requires successful compilation and expert customization;
+    uncompilable programs and evolving analysis needs hinder applicability.
+  Core novelty: compilation-free dataflow analysis powered by LLMs.
+  Anti-hallucination techniques:
+    1. Task decomposition: problem broken into subtasks.
+    2. Code synthesis: LLM generates code to outsource delicate reasoning to external tools
+       (e.g., parsing libraries to extract program values).
+    3. Theorem prover integration: automated theorem prover validates path feasibility.
+    4. Few-shot chain-of-thought prompting: summarizes dataflow facts per individual function,
+       aligning LLM outputs with program semantics.
+  Results:
+    Precision: 87.10% average.
+    Recall: 80.77% average.
+    F1 improvement: up to 0.35 over existing techniques.
+  Evaluation: synthetic programs (3 bug types) + real-world Android apps (customized bug detection).
+  Code open-sourced: https://github.com/chengpeng-wang/LLMDFA
+  Paper: 26 pages, 15 figures, 6 tables.
+  Key insight: LLM synthesizes code that calls parsers/provers rather than directly reasoning about paths.
+<<<END>>>
+
+SOURCE
+id: 16
+ts: 2026-05-29T00:15:30Z
+relevance: HIGH
+title: RepoAudit: Autonomous LLM-Agent for Repository-Level Code Auditing — Full Details
+authors: (arXiv 2501.18160)
+year: 2025
+venue: arXiv preprint
+quality: PREPRINT
+url: https://arxiv.org/abs/2501.18160
+keywords: RepoAudit, LLM agent, repository-level, dataflow, path condition, validator, hallucination, precision, false positive, on-demand
+cites:
+cited_by:
+content:
+  Core challenge addressed: limited context windows + hallucinations degrade bug reports;
+    large-scale repo analysis incurs substantial time and token costs.
+  Architecture:
+    Agent memory: explores codebase on-demand rather than loading whole repo.
+    Analyzes dataflow facts along feasible program paths within individual functions.
+    Targeted exploration: follows dataflow chains on demand.
+  Validator module:
+    Verifies data-flow facts for hallucination mitigation.
+    Checks satisfiability of path conditions associated with potential bugs.
+    Reduces false positives by rejecting infeasible-path findings.
+  Results:
+    40 true bugs detected across 15 benchmark projects.
+    Precision: 78.43%.
+    Cost: 0.44 hours and $2.54 per project on average.
+    185 new bugs discovered in high-profile projects; 174 confirmed or fixed.
+  No specific comparison against static analysis baselines reported in abstract.
+<<<END>>>
+
+SOURCE
+id: 17
+ts: 2026-05-29T00:16:00Z
+relevance: HIGH
+title: Reducing False Positives in Static Bug Detection with LLMs: Industry Empirical Study (Tencent)
+authors: (arXiv 2601.18844)
+year: 2026
+venue: arXiv preprint
+quality: PREPRINT
+url: https://arxiv.org/html/2601.18844v1
+keywords: false positive reduction, LLM, static analysis, industry, Tencent, enterprise, null dereference, use-after-free, buffer overflow, hybrid
+cites:
+cited_by:
+content:
+  Context: Tencent's enterprise-customized SAT on Advertising and Marketing Services software.
+  Dataset: 433 real alarms (328 false positives, 105 true positives) — FP rate ~75.7% in production.
+  Bug types: 3 common categories (null dereference, use-after-free, buffer overflow implied).
+  Manual inspection cost: 10-20 minutes per alarm (current workflow).
+  Hybrid LLM+SA results:
+    Eliminate 94-98% of false positives with strong recall.
+    Cost: 2.1-109.5 seconds per alarm (vs. 10-20 min manual).
+    Cost: $0.0011-$0.12 per alarm (substantially cheaper than human review).
+  First comprehensive empirical study of LLM-based FP reduction in industrial context.
+  Key finding: hybrid LLM+SA techniques outperform LLM-only methods.
+  Limitation: benchmarks from open-source datasets may not reflect enterprise reality.
+<<<END>>>
+
+SOURCE
+id: 18
+ts: 2026-05-29T00:16:30Z
+relevance: HIGH
+title: Minimizing False Positives in Static Bug Detection via LLM-Enhanced Path Feasibility Analysis (LLM4PFA)
+authors: (arXiv 2506.10322)
+year: 2025
+venue: arXiv preprint
+quality: PREPRINT
+url: https://arxiv.org/html/2506.10322v1
+keywords: LLM4PFA, path feasibility, false positive, null pointer, use-after-free, buffer overflow, resource leak, CodeQL, Infer, Cppcheck
+cites: LLMDFA (2402.10754), LLM4SA, CodeQL, Infer, Cppcheck
+cited_by:
+content:
+  Approach: LLM assesses path feasibility of static analysis alerts as post-processing filter.
+  Input preparation: CFG and program paths converted to natural language for LLM.
+  Feasibility assessment: LLM determines whether identified code paths can realistically execute.
+  Alert filtering: removes alerts on infeasible paths.
+  Static analysis sources: CodeQL, Infer, Cppcheck produce initial alerts.
+  Bug types: null pointer dereferences, use-after-free, buffer overflows, resource leaks.
+  Baselines compared against: LLM4SA, LLMDFA (arXiv 2402.10754).
+  Key design: SA provides candidate paths; LLM reasons about path feasibility — clear division.
+  Specific numerical FP reduction rates embedded in result tables (not extracted from PDF).
+<<<END>>>
+
+SOURCE
+id: 19
+ts: 2026-05-29T00:17:00Z
+relevance: HIGH
+title: CodeQL SARIF v2.1.0 Output Format — Full Schema
+authors: GitHub team
+year: 2024
+venue: docs.github.com (official documentation)
+quality: DOCS
+url: https://docs.github.com/en/code-security/codeql-cli/using-the-advanced-functionality-of-the-codeql-cli/sarif-output
+keywords: SARIF, CodeQL, path alert, codeFlows, threadFlows, relatedLocations, physicalLocation, region, severity, ruleId, fingerprint
+cites:
+cited_by:
+content:
+  SARIF version: v2.1.0.csd1
+  Result fields:
+    ruleId: rule identifier (format: language/rule-name)
+    ruleIndex: position in rules array
+    message: problem description (may use SARIF placeholder syntax)
+    locations: single-element array with primary location
+    partialFingerprints: dict including primaryLocationLineHash
+  Location hierarchy: location → physicalLocation → region
+    physicalLocation contains: artifactLocation (always) + optional region/contextRegion
+    region formats:
+      Line/column: startLine (required), startColumn, endLine, endColumn, snippet
+      Character offsets: charOffset, charLength, snippet (when line/col unavailable)
+  Path problem output (for @kind path-problem queries):
+    results include codeFlows array:
+      codeFlow → threadFlows → threadFlowLocation → location
+      Each threadFlowLocation has location with optional message.
+  relatedLocations: populates when queries use message placeholder options.
+    Source and sink of path alerts added to relatedLocations if not in primary location.
+    Path alerts show on PRs if source or sink is added/modified.
+  Result grouping: default groups by unique message format + primary location.
+    --ungroup-results disables grouping.
+  Severity: level property set according to @severity in query metadata.
+  Rule metadata (reportingDescriptor):
+    id, name: rule identifier
+    shortDescription: @name property
+    fullDescription: @description property
+    defaultConfiguration: enabled status and severity level from @severity
+  Artifacts: always contain location and index; optional contents with --sarif-add-file-contents.
+  Backwards compatibility: always-generated fields never removed; new optional fields may appear.
+<<<END>>>
+
+SOURCE
+id: 20
+ts: 2026-05-29T00:17:30Z
+relevance: HIGH
+title: Augmenting LLMs with Static Code Analysis for Automated Code Quality Improvements (arXiv 2506.10330)
+authors: (arXiv 2506.10330)
+year: 2025
+venue: arXiv preprint
+quality: PREPRINT
+url: https://arxiv.org/html/2506.10330v1
+keywords: SonarQube, LLM, GPT-4o, GPT-3.5, RAG, code smell, bug, vulnerability, static analysis, prompt engineering, retrieval augmented generation
+cites: SonarQube
+cited_by:
+content:
+  Static analysis tool used: SonarQube (identifies bugs, vulnerabilities, code smells).
+  Issue extraction: file names, line numbers, issue descriptions, suggested solutions from SonarQube.
+  Data organized into files for structured LLM processing.
+  Models tested: GPT-3.5 Turbo and GPT-4o.
+  Prompt engineering: 20+ iterations; two-step approach:
+    Step 1: specify programming language, delineate task.
+    Step 2: few-shot learning with examples per issue type.
+  RAG: retrieves solutions from Stack Overflow, GitHub, SonarQube Community, Google.
+    Solutions ranked by: source reliability, relevance, redundancy.
+    Integrated into enriched prompts.
+  Hallucination mitigation: "Code Comparison App" identifies erroneous changes before implementation.
+  Results:
+    Bugs: 234 total, 100% combined success rate, F1 98.4%.
+    Vulnerabilities: 61 total, 100% combined success rate, F1 99.25%.
+    Code smells: 7304 total, 81.2% combined success rate, F1 96.05%.
+    GPT-4o outperformed GPT-3.5 Turbo across all categories.
+    Cost: less than $35 for 7,599+ issues in under 3 hours.
+  Divided approach (issue types separately) outperforms comprehensive processing.
+<<<END>>>
+
+SOURCE
+id: 21
+ts: 2026-05-29T00:18:00Z
+relevance: HIGH
+title: Datadog: Using LLMs to Filter Out False Positives from Static Code Analysis
+authors: Datadog Security team
+year: 2024
+venue: datadoghq.com (engineering blog)
+quality: INDUSTRY
+url: https://www.datadoghq.com/blog/using-llms-to-filter-out-false-positives/
+keywords: false positive, SAST, LLM, OWASP Benchmark, CWE, Datadog Code Security, binary classification, prompt design, production
+cites: OWASP Benchmark
+cited_by:
+content:
+  Task framing: binary classification — true positive or false positive for each SAST alert.
+  Benchmark: OWASP Benchmark (public, widely used dataset for SAST evaluation).
+  Alert scope: CWEs from OWASP Benchmark and OWASP Top Ten.
+  LLM evaluation: "evaluates the surrounding code to determine whether the issue is more likely 
+    to be true or false."
+  Prompt design: tested wide range including system prompt, model type, temperature, top-p.
+  Critical trade-off: prompts optimized for TP "tended to misclassify more FPs"; 
+    prompts filtering FPs "risk missing real issues."
+  Configuration: balanced between competing pressures.
+  Deployment: "False positive filtering available today for Datadog Code Security customers."
+  UI: single-click filtering in Vulnerabilities explorer.
+  Key limitation: "model's effectiveness still depends on quality of underlying static analyzer."
+  No specific FP reduction percentages published.
+<<<END>>>
+
+SOURCE
+id: 22
+ts: 2026-05-29T00:18:30Z
+relevance: HIGH
+title: Scaling Static Analyses at Facebook — CACM 2019
+authors: Facebook/Meta engineering team
+year: 2019
+venue: Communications of the ACM, Vol. 62 No. 8
+quality: PEER-REVIEWED
+url: https://m-cacm.acm.org/magazines/2019/8/238344-scaling-static-analyses-at-facebook/fulltext
+keywords: Infer, Facebook, scaling, interprocedural, null dereference, data race, false positive, production, bi-abduction
+cites:
+cited_by:
+content:
+  Tool: Infer — interprocedural static analyzer using bi-abduction.
+  Scale: millions of lines of code at Facebook.
+  Bug types: null dereferences, data races, security issues.
+  Key metric: for null dereferences, data races, and security issues, 
+    "over 50% of fixes were for bugs with traces that were interprocedural."
+  False positive issue: Infer fails to detect that null has been checked via Objects.nonNull() 
+    vs explicit null checks — implementation-specific FP source.
+  Developer experience: FPs documented in GitHub issues #1642, #1644.
+  Production deployment: "avoiding false positives and giving only relevant warnings."
+  (Additional detail from: https://engineering.fb.com/2017/09/06/android/finding-inter-procedural-bugs-at-scale-with-infer-static-analyzer/)
+<<<END>>>
+
+SOURCE
+id: 23
+ts: 2026-05-29T00:19:00Z
+relevance: HIGH
+title: An Empirical Study of Suppressed Static Analysis Warnings (FSE 2025)
+authors: (software-lab.org/publications/fse2025_suppressions.pdf)
+year: 2025
+venue: FSE 2025
+quality: PEER-REVIEWED
+url: https://software-lab.org/publications/fse2025_suppressions.pdf
+keywords: suppression, static analysis, false positive, developer behavior, technical debt, warning, triage
+cites:
+cited_by:
+content:
+  Key findings on suppression behavior:
+    False positives are the most common reason for using suppressions (34.4% of all cases).
+    Developers "mostly add suppressions along with new code, in an explicit effort to reduce new warnings."
+    Over half of all suppressions are useless — they do not suppress any warning.
+    A significant number of suppressions introduce technical debt.
+  Reasons developers suppress:
+    False positives from incomplete language/framework support.
+    Imprecise and misleading messages.
+    Improper configurations.
+    Warnings deemed not important enough.
+  Root cause of high FP: tools are "largely path-insensitive"; manual triage of large numbers of false alarms
+    "significantly reducing the practical utility of the tool."
+  Recommendation: better communication/education on SA tools, improved bug pattern definitions,
+    better code annotation support.
+<<<END>>>
+
+SOURCE
+id: 24
+ts: 2026-05-29T00:19:30Z
+relevance: HIGH
+title: Quieting the Static: A Study of Static Analysis Alert Suppressions (arXiv 2311.07482)
+authors: (arXiv 2311.07482)
+year: 2023
+venue: arXiv preprint
+quality: PREPRINT
+url: https://arxiv.org/pdf/2311.07482
+keywords: suppression, static analysis, alert, developer behavior, survey
+cites:
+cited_by: FSE 2025 suppression study
+content:
+  Study of developer suppression patterns for static analysis alerts.
+  (From search snippet; full content not fetched.)
+  Related to FSE 2025 suppression study above.
+<<<END>>>
+
+SOURCE
+id: 25
+ts: 2026-05-29T00:20:00Z
+relevance: HIGH
+title: LLM Hallucinations in Code Review — Systematic Overcorrection (arXiv 2603.00539)
+authors: (arXiv 2603.00539)
+year: 2026
+venue: arXiv preprint
+quality: PREPRINT
+url: https://arxiv.org/pdf/2603.00539
+keywords: LLM, code review, hallucination, overcorrection, false positive, over-reporting, requirement conformance
+cites:
+cited_by:
+content:
+  Key finding: "increasing prompt complexity substantially reduces models' Requirement Conformance 
+    Recognition Rate."
+  Overcorrection bias: correct implementations misclassified as non-conforming.
+  Detailed prompts "may inadvertently introduce biases toward excessive fault finding."
+  Models "detect non-existent errors in otherwise correct implementations."
+  Implication for flow-graph reviewers: more complex prompts (e.g., including full dataflow paths) 
+    may cause over-reporting of false findings.
+  Title: "Are LLMs Reliable Code Reviewers? Systematic Overcorrection in Requirement Conformance Judgement"
+<<<END>>>
+
+SOURCE
+id: 26
+ts: 2026-05-29T00:20:30Z
+relevance: HIGH
+title: Grounded AI for Code Review (arXiv 2510.10290)
+authors: (arXiv 2510.10290)
+year: 2025
+venue: arXiv preprint
+quality: PREPRINT
+url: https://arxiv.org/pdf/2510.10290
+keywords: grounded AI, static analysis, LLM, code review, enterprise, determinism, hallucination, fix suggestion, resource-efficient
+cites:
+cited_by:
+content:
+  Production system coupling industry-grade static analysis determinism with LLM explanatory power.
+  Architecture: SA finds issues deterministically; LLM explains and suggests fixes.
+  Resource-efficient model serving: designed for enterprise pipeline scalability.
+  Constrains model reasoning space to reduce hallucinations.
+  Enhances relevance of fix suggestions through SA grounding.
+  Clean role separation: SA = facts; LLM = explanation/fix generation.
+<<<END>>>
+

@@ -1,0 +1,702 @@
+              RFC1: pflow — Explicit Python Program Flow Graphs for Agent Review
+
+
+Status:         Draft (v1)
+Authors:        lafiel
+Created:        2026-05-28
+Last Updated:   2026-05-28
+
+
+1.  Abstract
+
+    pflow is a single-binary, agent-primary CLI (and importable
+    library) that turns Python source (or live objects) into explicit,
+    addressable, queryable control-flow and data-flow artifacts.
+
+    The goal is to let flow-graph-reviewer instances (and any other
+    implementation or review agent) operate on real compiler-style
+    structures — basic blocks, exception edges, reaching definitions,
+    def-use chains, and program slices — instead of reconstructing
+    them by hand while reading linear text.
+
+    v1 scope is deliberately narrow and shippable:
+
+    - Intraprocedural only.
+    - Name-based reaching definitions (def-use).  No full SSA,
+      no heap modeling, no sophisticated alias analysis.
+    - High-fidelity CFG that correctly models Python's try/finally,
+      with, match, comprehensions, and generators.
+    - Stable reference system so an agent can say "look at
+      [mod:func:bb:4]" or "slice from def:state@87 backward" and get
+      deterministic, machine-readable results back.
+    - Output formats optimized for token density when the consumer
+      is another LLM (the "-a" / agent mode).
+
+    The design follows the exact contract established by cbudget and
+    mq in this repo:
+
+    - Agent is the primary user; operator is secondary.
+    - Default output is dense, column-oriented or single-line with
+      refs; no color, no boxes, no prose in the common path.
+    - Semantic exit codes (2 = structural problem, 3 = lowering
+      failure on some targets, etc.).
+    - Python implementation (deep use of ast + dis + inspect) with
+      clear places for later C accelerators.
+    - Explicit non-goals and ruthless scope boundaries.
+
+    Research and implementation precedent inside this tree:
+    poly/poly/graph/ (IRGraph, BasicBlock, IROperation, integer op
+    indices, attrs dicts, dependency passes) and DNET/src/ir/cfgraph.h
+    (explicit pred/succ lists, dominance, id counters, aux, arena
+    style thinking even if we use Python objects here).
+
+    This RFC is intentionally code-heavy.  It contains the actual
+    dataclass shapes, the lowering algorithm in numbered steps, the
+    dataflow equations, the ref grammar, example IR for tricky
+    Python constructs, and the proposed source tree under pflow/pflow/.
+
+
+2.  Problem
+
+    2.1  Mental simulation is the bottleneck for structural review
+
+         A competent flow-graph-reviewer given a 90-line function
+         containing nested loops, early returns, a with block, a
+         try/finally, and exception paths must simultaneously maintain
+         in context:
+
+         - The set of basic blocks and which edges are exceptional.
+         - Which definitions of a variable can reach which uses
+           (including across finally blocks that run on multiple paths).
+         - Whether a given cleanup statement post-dominates all exits.
+         - The actual backward slice of state that affects a critical
+           return value or side effect.
+
+         Doing this reconstruction from source text on every review
+         is lossy, non-reproducible, and extremely token-expensive.
+         It is the same class of problem cbudget attacks for "cost of
+         reading a file" and mq attacks for "recall from a research
+         corpus".
+
+    2.2  Existing Python tooling is not agent-shaped
+
+         dis + inspect give raw instructions or source lines.
+         ast gives a tree, not a flow graph with exception semantics.
+         astroid / pylint give facts but no stable ref system an agent
+         can quote and later dereference.
+         The various open-source Python CFG projects are either
+         unmaintained, visualization-only, or produce structures that
+         are not designed to be consumed programmatically with
+         low-token dense output.
+
+         The result is that our best structural reviewers are still
+         doing the compiler's job manually.
+
+
+3.  Goals for v1
+
+    - Produce a correct intraprocedural CFG for any Python 3.12+
+      function or method, including all the nasty cases (try/finally
+      duplication, with block cleanup, comprehensions becoming
+      synthetic functions, match, async, generators).
+    - Compute reaching definitions over that CFG using the classic
+      iterative dataflow algorithm.  Name-based only in v1.
+    - Emit def-use chains and support forward + backward slicing
+      (with conservative control dependence for v1).
+    - Provide a stable, compact, parseable reference format so that
+      "pflow show mod:func:bb:3" and "pflow slice --from 'mod:func:def:x@42' --backward"
+      are first-class operations.
+    - Default output is the "-a" (agent) form: single-line or
+      extremely dense multi-line with embedded refs.
+    - Usable both as `pflow` binary and `from pflow.ir import ...`.
+    - Sub-second on typical review-sized functions.
+    - Python 3.12+ only (we are on 3.14 today; older versions later).
+
+
+4.  Non-Goals for v1 (explicit and binding)
+
+    - Full SSA with phi nodes (we can add a "pflow ssa" view later
+      without changing the core CFG shape).
+    - Any form of heap or alias analysis beyond "same base name +
+      attribute path string".
+    - Interprocedural analysis beyond a conservative call graph.
+    - Type inference or flow-sensitive types.
+    - Live symbolic execution.
+    - Visualization as primary output (dot is an escape hatch).
+    - Automatic injection into the review skill or flow-graph-reviewer
+      persona prompts.  That is a subsequent RFC once the tool has
+      proven itself in manual use.
+    - Python < 3.12 support.
+
+    Anything that expands the above list requires either an amendment
+    to this RFC or a new RFC-0002.
+
+
+5.  Principles (binding on the implementation)
+
+    5.1  The agent is the primary reader of every default output path.
+         Operator conveniences come behind an explicit --human or
+         later interactive flag.
+
+    5.2  Every interesting structural element must have a stable ref
+         that an agent can write in its notes and later feed back into
+         the tool.  Refs are load-bearing like mq's [file:NN/R].
+
+    5.3  Two tracks in one binary.  The fast path (cfg, defuse, slice,
+         complexity) is what runs inside a review.  The analytical
+         path (analyze, paths --live, dominance --full) is for the
+         human doing research on the tool itself.
+
+    5.4  Python source is the human view; bytecode is the semantic
+         truth for control flow.  We lower from both and surface when
+         they diverge (especially finally blocks and with).
+
+    5.5  We copy the poly discipline: integer indices for blocks and
+         ops (stable, cheap, easy to diff and serialize), attrs dict
+         on almost everything for passes to hang annotations, tiny
+         number of dataclasses, functions over deep class hierarchies.
+
+    5.6  "Good enough for review agents" is the quality bar, not
+         "sound for a real compiler".  We will be explicit about
+         soundness knobs and conservative approximations.
+
+
+6.  IR Data Model (v1 — the actual shapes)
+
+    All of the following live under pflow/pflow/ir/.
+
+    6.1  Core dataclasses (proposed, with rationale)
+
+         from __future__ import annotations
+         from dataclasses import dataclass, field
+         from typing import Any, Dict, List, Optional, Tuple
+         import ast
+
+         @dataclass(slots=True)
+         class Op:
+             """A single statement-level operation inside a basic block.
+
+             We deliberately stay at statement granularity for v1.
+             Expression-level precision can be added later without
+             changing block structure.
+             """
+             id: int                    # dense, stable within FunctionGraph
+             kind: str                  # 'assign', 'call', 'return', 'raise',
+                                        # 'branch', 'enter_with', 'exit_finally', ...
+             targets: Tuple[str, ...]   # names defined by this op (LHS)
+             uses: Tuple[str, ...]      # names read (including bases of attrs)
+             attr_paths: Tuple[str, ...] = ()   # "obj.x.y" style for simple cases
+             source: Tuple[int, int, int, int] | None = None  # (lineno, col, end_lineno, end_col)
+             attrs: Dict[str, Any] = field(default_factory=dict)
+
+         @dataclass(slots=True)
+         class BasicBlock:
+             id: int
+             ops: Tuple[Op, ...]
+             succs: Tuple[int, ...]          # normal control successors
+             except_succs: Tuple[int, ...]   # exceptional / finally targets
+             preds: Tuple[int, ...] = ()     # filled by a post-pass
+             source_lines: Tuple[int, ...] = ()   # original source lines covered
+             attrs: Dict[str, Any] = field(default_factory=dict)
+             # Common keys that will appear in attrs after passes:
+             #   'dominators': set[int]
+             #   'post_dominators': set[int]
+             #   'gen': set[DefId]
+             #   'kill': set[DefId]
+             #   'reaching_in': set[DefId]
+             #   'reaching_out': set[DefId]
+
+         @dataclass(slots=True)
+         class FunctionGraph:
+             qualname: str
+             source_path: str
+             first_line: int
+             blocks: Tuple[BasicBlock, ...]
+             entry: int
+             exit_blocks: Tuple[int, ...]
+             ops: Tuple[Op, ...]             # flattened for convenience
+             defs: List[Def]                 # all definition sites
+             uses: List[Use]
+             attrs: Dict[str, Any] = field(default_factory=dict)
+
+         @dataclass(slots=True)
+         class Def:
+             id: int
+             op_id: int
+             block_id: int
+             name: str
+             source: Tuple[int, ...] | None
+
+         @dataclass(slots=True)
+         class Use:
+             id: int
+             op_id: int
+             block_id: int
+             name: str
+             reaching_defs: Tuple[int, ...]   # Def.ids that can reach here
+
+    6.2  ModuleGraph (thin container)
+
+         Just a dict[qualname, FunctionGraph] plus module-level
+         imports and class hierarchy info that we will need for
+         later call-graph work.  In v1 we mostly use it for
+         "pflow callgraph" and for resolving short refs.
+
+
+7.  Lowering Strategy (the hard part — spelled out)
+
+    7.1  Dual-source construction
+
+         We build two CFGs and compare:
+
+         a) Source CFG from ast.AST (the view the human reviewer sees).
+         b) Bytecode CFG from dis.Bytecode / dis.Instruction (the
+            actual semantics the interpreter will execute, especially
+            for finally and with).
+
+         When they diverge we annotate the source blocks with
+         "bytecode_notes" and let the agent ask for --view bytecode.
+
+    7.2  Source CFG construction algorithm (numbered steps)
+
+         1.  Parse with ast.parse(..., type_comments=True).
+         2.  Find the target FunctionDef or AsyncFunctionDef.
+         3.  Perform a recursive walk that maintains a current basic
+             block and a "pending edge" set (standard "threaded CFG"
+             construction).
+         4.  For every compound statement (If, While, For, Try,
+             With, Match, etc.) create the appropriate diamond,
+             loop back-edges, or finally-merge structure.
+         5.  For Try nodes: create a handler block per ExceptHandler,
+             a finally block if present, and wire the except_succs
+             edges.  The finally block is duplicated on every exit
+             path that can reach it (this is where the bytecode view
+             is the oracle for how many copies we need).
+         6.  With nodes are lowered as a pair of synthetic
+             enter_with / exit_with ops with an implicit finally
+             region.
+         7.  Comprehensions and generator expressions become
+             synthetic FunctionGraphs (we record the parent link).
+         8.  After the walk, run a post-pass that fills preds lists
+             and computes entry + natural exit blocks.
+
+         The implementation will live in
+         pflow/pflow/ir/cfg.py:build_cfg_from_ast().
+
+    7.3  Bytecode CFG construction (validation + truth)
+
+         Walk dis.Bytecode, tracking block starts at jump targets
+         and after instructions that terminate a block (RETURN,
+         RAISE, JUMP, etc.).  Use the new 3.11+ positions on
+         Instruction to map back to source lines.
+
+         This pass is the one that correctly sees that a finally
+         handler can be reached from the try body, from each except,
+         and from the with exit.
+
+    7.4  Op synthesis
+
+         We do not emit one Op per bytecode instruction.  We emit
+         one Op per source-level statement (or synthetic statement
+         for finally regions), and we attach the list of bytecode
+         offsets that contributed to it in op.attrs['bytecode'].
+         This keeps the graph size reasonable for agents while still
+         giving them the semantic truth when they need it.
+
+
+8.  Reaching Definitions (def-use) — v1 algorithm
+
+    Classic iterative dataflow, forward, may-analysis.
+
+    For each block b we compute:
+
+        gen[b]   = definitions in b that are not killed later in b
+        kill[b]  = definitions of the same name that are overwritten
+                   in b (last write wins for the "out" set)
+
+    Then the usual fixed-point iteration:
+
+        in[b]  = union over p in preds[b] of out[p]
+        out[b] = gen[b] union (in[b] minus kill[b])
+
+    We run until no change.  Because Python functions are rarely
+    thousands of blocks, a simple worklist or even repeated full
+    passes is acceptable for v1.
+
+    After convergence we build the Def and Use objects and wire
+    reaching_defs on each Use.
+
+    This is implemented in pflow/pflow/analysis/dataflow.py.
+
+    Attribute paths ("self.state", "obj.x.y") are tracked as
+    composite names in v1.  If two writes have identical path
+    strings we consider them the same definition site for reaching
+    purposes.  This is a deliberate, documented over-approximation.
+
+
+9.  Reference Format (the contract agents will quote)
+
+    Grammar (informal BNF):
+
+        ref          ::= path ":" qualname ":" kind [ ":" detail ]
+        path         ::= short-rel-path | module-name
+        qualname     ::= identifier ( "." identifier )*
+        kind         ::= "bb" | "def" | "use" | "slice" | "op"
+        detail       ::= bbnum
+                       | name "@" lineno
+                       | sliceid ( ":" direction )?
+
+    Canonical examples that must round-trip:
+
+        [orchestrator.py:Reconciler.step:bb:3]
+        [orchestrator.py:Reconciler.step:def:lease@87]
+        [orchestrator.py:Reconciler.step:use:state@214]
+        [orchestrator.py:run:slice:142:backward]
+
+    The tool must implement:
+
+        pflow resolve <ref>
+        pflow show <ref>
+        pflow slice --from <ref> ...
+
+    Refs are stable across identical source text.  Changing the
+    function body invalidates refs that pointed inside it (the tool
+    will say "stale ref" with a suggestion to re-run the parent
+    query).
+
+
+10. CLI Surface (v1)
+
+    Core commands that must exist and produce agent-dense output by
+    default:
+
+        pflow cfg <target> [-a] [--view source|bytecode]
+        pflow defuse <target> [--var NAME] [-a]
+        pflow slice --from <ref> [--backward] [--depth N] [-a]
+        pflow show <ref>
+        pflow complexity <target>
+        pflow report <target>          # like cbudget report
+        pflow callgraph <target> --depth 2
+
+    Target forms:
+
+        file.py
+        file.py:Class.method
+        file.py:func
+        live:some.module:qualname      # imports and uses inspect + __code__
+        -                              # stdin
+
+    Exit codes (must be respected by any wrapper scripts):
+
+        0  success (all requested targets produced structure)
+        2  structural / budget-like signal (e.g., function too big)
+        3  partial lowering failure (some functions succeeded)
+        4  unsupported Python feature for v1
+
+    Sample agent output (what a reviewer would actually paste into
+    its context):
+
+        $ pflow cfg seeker/orchestrator.py:Reconciler.step -a
+        [orchestrator.py:Reconciler.step:bb:0] entry
+          succs: [1]
+        [orchestrator.py:Reconciler.step:bb:1] try: acquire
+          defs: [lease@87]
+          uses: [self]
+          succs: [2]  except: [5]
+        ...
+
+
+11. Package Layout (pflow/pflow/ — the concrete tree)
+
+    pflow/
+      pflow/
+        __init__.py
+        __main__.py
+        cli.py                 # argparse, subcommand dispatch, exit codes
+        ir/
+          __init__.py
+          graph.py             # FunctionGraph, BasicBlock, Op, Def, Use
+          cfg.py               # build_cfg_from_ast, build_cfg_from_bytecode
+          lowering.py          # statement -> Op synthesis, source mapping
+        analysis/
+          __init__.py
+          dataflow.py          # reaching definitions, gen/kill, def-use
+          slice.py             # forward/backward slicing
+          dominance.py         # dominators + post-dominators (v1)
+        format/
+          __init__.py
+          agent.py             # the -a single-line dense renderer
+          dot.py
+          table.py
+          kv.py
+        refs.py                # parse, resolve, show, stable id generation
+        inspect_live.py        # the "live:" target path
+        walk.py                # generic graph walkers used by multiple passes
+      docs/
+        rfcs/
+          RFC-0001-pflow-python-program-flow-graphs.txt
+        notes/
+      tests/
+        golden/                # hard functions + expected block/defuse dumps
+          test_try_finally.py
+          test_with_in_loop.py
+          ...
+
+    Note the absence of src/.  The import name is `pflow.ir`,
+    `pflow.analysis.dataflow`, etc.  This matches the "pflow/pflow"
+    layout the author requested.
+
+
+12. Implementation Order (high level)
+
+    Phase 0  Skeleton + CLI stub that accepts targets and says
+             "not yet implemented" with the right exit codes.
+
+    Phase 1  Dual CFG lowering (ast first, then bytecode validator)
+             + BasicBlock/Op emission.  Golden tests for the really
+             ugly cases.
+
+    Phase 2  Reaching definitions + Def/Use wiring.
+
+    Phase 3  Slice + show + ref parser.
+
+    Phase 4  Agent output formatters + density tuning until the
+             output of a 40-line function with two finally blocks
+             fits comfortably in < 300 tokens.
+
+    Phase 5  complexity, report, callgraph, live: target.
+
+    Only after Phase 4 do we consider any integration with the
+    review skill.
+
+
+13. Open Questions (to be settled in PLAN.md or during coding)
+
+    - Exact pretty-print format for the agent mode of "pflow cfg"
+      (how many fields per line, when to elide, etc.).
+    - Whether we synthesize a single "finally_merge" block or
+      duplicate the finally region on every exiting edge (the
+      latter is more faithful to runtime but grows the graph).
+    - How much of the bytecode instruction list we attach to each
+      Op (full list vs. only the control-flow relevant ones).
+    - Caching policy for repeated queries against the same file
+      within one agent session.
+    - Whether "pflow report" should also emit a cheap complexity
+      number that can be used by cbudget-style pre-filters.
+
+    These will be resolved with concrete examples in the PLAN.md
+    that follows this RFC.
+
+
+14. Success Criteria
+
+    A flow-graph-reviewer, when handed a complex function, can:
+
+    1. Run `pflow cfg thefile.py:thefunc -a` and receive an accurate
+       block graph with exception edges in well under 200 tokens.
+    2. Run `pflow dataflow ... --var critical` (or the equivalent walk)
+       and see which writes reach which reads, including the finally
+       paths.
+    3. Use `pflow walk --from <ref> --depth 3 --edges data` to focus
+       attention on the relevant dataflow subgraph without reading
+       the entire function.
+    4. Quote the emitted refs in its own review notes and have them
+       still be valid when it (or a later agent) re-invokes pflow.
+
+    When reviewers start treating pflow refs the same way they
+    currently treat file:line numbers, this tool has succeeded.
+
+
+15. CLI Surface (Revised)
+
+    This section supersedes the command list in §10.  It reflects
+    the design decision to treat dataflow as a first-class view
+    alongside control flow, and to make graph traversal ("walk")
+    a primary primitive for agents that need to focus attention.
+
+    15.1  Guiding principles for the surface
+
+          - `cfg` owns the control skeleton.
+          - `dataflow` owns the reaching definitions / def-use view.
+          - `walk` is the general, powerful way for an agent to
+            explore subgraphs starting from any ref (the "focus
+            the model's attention" tool).
+          - `slice`, `paths`, and similar are convenience queries
+            built on top of the above (they may be implemented by
+            calling into the walk machinery).
+          - Old names that were too cryptic (`defuse`, raw
+            "complexity") are removed.  Functionality is preserved
+            under clearer names.
+
+    15.2  Core commands (v1)
+
+          pflow cfg <target> [-a] [--view source|bytecode]
+              Emit the control-flow graph: basic blocks, normal
+              successors, exceptional successors, and the ops
+              inside each block.
+
+          pflow dataflow <target> [--var NAME] [-a]
+              Compute and display the reaching definitions (def-use)
+              information.  Without --var it shows a summary of all
+              definitions and their reachable uses.  With --var it
+              focuses on definitions and uses of that name (or
+              simple attribute path).
+
+              This command replaces the earlier "defuse" concept.
+              The old functionality lives here.
+
+          pflow walk --from <ref>
+                [--depth N]
+                [--direction forward|backward|both]
+                [--edges control|data|both]
+                [--kind assign|call|branch|...]
+                [-a]
+              The most important query primitive for agents.
+
+              Starts at the given ref (a block, a definition site,
+              a use site, or an op) and walks the graph according
+              to the filters.  This is how an agent says "show me
+              only the dataflow consequences of this particular
+              assignment, three steps out" or "what control
+              locations are reachable backward from this raise".
+
+              This directly addresses the need to let the model
+              focus on particular variables or functions without
+              ingesting an entire dump.
+
+          pflow slice --from <ref> [--backward|--forward] [--depth N] [-a]
+              Convenience form that walks def-use edges (plus
+              conservative control dependence) and returns the
+              minimal influencing set.  Implemented on top of the
+              walk machinery.
+
+          pflow paths --from <ref> --to <ref> [-a]
+              Enumerate (or count) paths between two points in the
+              combined control+data graph.
+
+          pflow metrics <target> [-a]
+              Structural metrics derived from the graphs (renamed
+              from the earlier "complexity" command to avoid
+              confusion with classic cyclomatic complexity).
+              Includes path count, data-dependence nesting depth,
+              size of largest backward data slice from exits, etc.
+
+          pflow report <target>
+              Combined structural + dataflow + metric summary,
+              analogous to `cbudget report`.  The "pre-read this
+              function" command for agents.
+
+          pflow callgraph <target> [--depth N] [--data] [-a]
+              Module or function call graph with optional dataflow
+              annotations on edges.
+
+          pflow show <ref>
+              Expand a single reference into its full local context
+              (the block it lives in, nearby ops, reaching defs at
+              that point, etc.).
+
+    15.3  Target and ref forms (unchanged from earlier thinking)
+
+          Targets:
+              file.py
+              file.py:Class.method
+              file.py:func
+              live:some.module:qualname
+              -
+
+          Refs (examples):
+              [mod.py:func:bb:3]
+              [mod.py:func:def:state@87]
+              [mod.py:func:use:result@142]
+              [mod.py:func:op:17]
+
+    15.4  Example agent-dense walk output (illustrative)
+
+          $ pflow walk --from 'orchestrator.py:Reconciler.step:def:lease@87' \
+                       --depth 3 --edges data --direction forward -a
+
+          [orchestrator.py:Reconciler.step:def:lease@87]
+            -> use: self._leases[lease.id]   (bb:2, op:4)
+            -> use: lease.state               (bb:2, op:5)
+               -> call: state_machine.transition  (bb:3)
+                  reaching: [state@91]
+            -> use: lease in finally region   (bb:7)
+
+          This kind of focused traversal is expected to be one of
+          the highest-leverage ways a flow-graph-reviewer will use
+          the tool.
+
+    15.5  Relationship between commands
+
+          - `dataflow` is essentially a whole-function view built
+            from the same information that `walk` traverses.
+          - `slice` is a specialized, deduplicated `walk` over
+            data edges (plus control dependence).
+          - `cfg` only needs to know about control edges.
+          - All of them operate over the same underlying
+            `FunctionGraph` produced by the IR layer.
+
+    15.6  Backward compatibility note
+
+          The names `defuse` and the original `complexity` command
+          are retired.  Any scripts or agent prompts written against
+          the first sketch of this RFC must be updated.  The
+          functionality is fully preserved under the new names
+          (`dataflow --var` and `metrics`).
+
+
+16. Amendment (v1.1): Interprocedural layer
+
+    Per §13's rule that expanding the non-goals requires an amendment,
+    this records the addition of a conservative whole-program layer.
+    §4 originally bounded interprocedural work to "a conservative call
+    graph"; v1.1 keeps the spirit (conservative, name-based, "good
+    enough for review agents") while adding two views on top of it.
+
+    New module: pflow/pflow/program.py — ProgramGraph. Walks a
+    directory/package, builds a dataflow-enriched FunctionGraph per
+    function keyed by `relpath:qualname`, and records per-module
+    imports, module globals (with `global` decls), and class
+    method/base tables. Call resolution is best-effort: super().m and
+    self.m resolve against the caller's class + in-program bases;
+    otherwise by same-module suffix then global simple-name match.
+    Polymorphic calls resolve to ALL same-named candidates (may-flow).
+
+    New analyses: pflow/pflow/analysis/interproc.py —
+      - program_callgraph + entrypoints/hubs/cycles(SCC)/layers
+        (control architecture).
+      - state_map: program-wide writers/readers of each self.<attr>
+        and module global, flagging shared-mutable-channel /
+        global-channel / many-writers / widely-read.
+      - trace_value: conservative may-flow of a value across function
+        boundaries — argument forwarding, store-escape via shared
+        state, and return-flow to callers.
+
+    New CLI: `pflow callgraph <dir>`, `pflow state <dir>`,
+    `pflow trace --value NAME <dir>`. (The old intra-file `callgraph
+    file.py` behaviour is subsumed: a single file is just a one-module
+    program.)
+
+    Caching (resolves §13's "caching policy" open question): the whole-
+    program build is cached on disk per file, keyed by (mtime, size), so
+    only changed files are re-lowered between invocations and the three
+    program commands share one build (~10x warm speedup observed). The
+    cache is invalidated wholesale when pflow's own analysis sources
+    change (fingerprint of cfg/graph/dataflow/program/interproc). `--no-
+    cache` forces a rebuild. Stored under $XDG_CACHE_HOME/pflow/program/.
+
+    Soundness knobs (documented over-approximations, per §5.6): no type
+    inference (method calls resolve by name), forward influence rather
+    than object identity in trace, no tracking of subscript writes or
+    aliasing, stdlib/third-party calls are not edges. These are the
+    interprocedural analogue of the intraprocedural trust boundary and
+    are surfaced to consumers the same way.
+
+    Still out of scope (would need RFC-0002): SSA, sound alias/heap
+    analysis, type-directed call resolution, and context-sensitive
+    (per-call-site) interprocedural dataflow.
+
+
+                              End of RFC1
+
+    (Next document: pflow/docs/PLAN.md once this RFC is accepted.)

@@ -1,0 +1,3952 @@
+MINER_DUMP
+topic: CPython Bytecode CFG Construction - Python 3.12/3.13/3.14 - dis API, exception tables, with-statement lowering, opcode set, source position mapping
+depth: 3
+date: 2026-05-28
+status: IN_PROGRESS
+record_count: 0
+<<<END>>>
+
+SOURCE
+id: 1
+ts: 2026-05-28T00:01:00Z
+relevance: HIGH
+title: dis — Disassembler for Python bytecode (Python 3.14 / current)
+authors: Python core developers
+year: 2026
+venue: docs.python.org/3/library/dis.html
+quality: DOCS
+url: https://docs.python.org/3/library/dis.html
+keywords: dis, Instruction, Bytecode, Positions, get_instructions, jump_target, label, cache_info, show_caches, hasjump, hasexc
+cites:
+cited_by:
+content:
+  ## dis.Instruction fields (3.14 / current)
+  All fields of the Instruction namedtuple/class:
+
+  opcode        int   — Numeric code for operation
+  opname        str   — Human readable name for operation
+  baseopcode    int   — Numeric code for base operation if specialized; else equals opcode
+                        [NEW in 3.13]
+  baseopname    str   — Human readable name for base operation if specialized; else equals opname
+                        [NEW in 3.13]
+  arg           int|None — Numeric argument to operation (if any), otherwise None
+  oparg         int|None — Alias for arg [NEW in 3.13]
+  argval        Any   — Resolved arg value (if any), otherwise None
+  argrepr       str   — Human readable description of operation argument, or empty string
+  offset        int   — Start index of operation within bytecode sequence
+  start_offset  int   — Start index including prefixed EXTENDED_ARG operations; otherwise equals offset
+                        [NEW in 3.13]
+  cache_offset  int   — Start index of cache entries following the operation [NEW in 3.13]
+  end_offset    int   — End index of cache entries following the operation [NEW in 3.13]
+  starts_line   bool  — True if this opcode starts a source line, otherwise False
+                        [CHANGED in 3.13: was int|None (line number or None) in 3.12, now bool]
+  line_number   int|None — Source line number associated with this opcode (if any) [NEW in 3.13]
+  is_jump_target bool — True if other code jumps to here, otherwise False
+  jump_target   int|None — Bytecode index of jump target if this is a jump operation, otherwise None
+                           [NEW in 3.13]
+  positions     dis.Positions — Object holding start and end source locations [NEW in 3.11]
+  cache_info    tuple|None — Cache entry information as (name, size, data) triplets; None if no caches
+                             [NEW in 3.13]
+
+  CRITICAL GOTCHA for cross-version code:
+    Python 3.12:  starts_line = int|None (the line number that starts here, or None)
+    Python 3.13+: starts_line = bool (True/False)
+    Python 3.13+: line_number = int|None (replaces the old starts_line semantics)
+    Python 3.12:  NO jump_target field — must compute from argval or offset arithmetic
+    Python 3.13+: jump_target = int|None (byte offset of jump target, or None if not a jump)
+
+  ## dis.Positions class (added 3.11)
+  Fields (all may be None if information unavailable):
+    lineno         int|None
+    end_lineno     int|None
+    col_offset     int|None
+    end_col_offset int|None
+
+  ## dis.Bytecode class
+
+  Constructor (3.14):
+    dis.Bytecode(x, *, first_line=None, current_offset=None,
+                 show_caches=False, adaptive=False,
+                 show_offsets=False,    # added 3.13
+                 show_positions=False)  # added 3.14
+
+  Constructor (3.13):
+    dis.Bytecode(x, *, first_line=None, current_offset=None,
+                 show_caches=False, adaptive=False,
+                 show_offsets=False)
+
+  Constructor (3.12):
+    dis.Bytecode(x, *, first_line=None, current_offset=None,
+                 show_caches=False, adaptive=False)
+
+  Attributes:
+    codeobj    — The compiled code object
+    first_line — The first source line of the code object (if available)
+
+  Methods:
+    dis()                        — Return formatted bytecode as multi-line string
+    info()                       — Return formatted multi-line code object info
+    from_traceback(tb, ...)      — Classmethod; constructs from traceback
+
+  ## dis.get_instructions() signature
+
+  3.12:
+    dis.get_instructions(x, *, first_line=None, show_caches=False, adaptive=False)
+    Returns: Iterator[Instruction]
+    Note: show_caches=True emits separate CACHE pseudo-instruction entries
+
+  3.13+:
+    dis.get_instructions(x, *, first_line=None, show_caches=False, adaptive=False)
+    Note: show_caches parameter DEPRECATED (no effect); cache info always in Instruction.cache_info
+    No longer generates separate items for cache entries.
+
+  ## Opcode collections relevant to CFG construction
+
+  dis.hasjump   — Sequence of bytecodes that have a jump target. All jumps are relative.
+                  [NEW in 3.13]
+  dis.hasexc    — Sequence of bytecodes that set an exception handler [NEW in 3.12]
+  dis.hasarg    — Sequence of bytecodes that use their argument [NEW in 3.12]
+  dis.hasjrel   — DEPRECATED since 3.13 (all jumps are relative; use hasjump)
+  dis.hasjabs   — DEPRECATED since 3.13 (now empty list)
+
+  ## CACHE entries and offset arithmetic
+
+  3.11+: CACHE opcode marks extra space for interpreter inline caches.
+  3.12+: Jump argument is target instruction offset RELATIVE to instruction after CACHE entries.
+         "CACHE instruction presence is transparent for forward jumps"
+  3.13+: get_instructions() no longer emits separate CACHE Instruction items; use cache_info field.
+         Cache entries no longer affect jump offset calculations visible to Python-level iteration.
+
+  ## Jump target computation (block leaders)
+
+  3.12: is_jump_target=True on an Instruction means other code jumps to it.
+        No explicit jump_target field; compute from: argval (often resolved) or manual offset arithmetic.
+
+  3.13+: instr.jump_target = int offset of jump destination (or None).
+         instr.is_jump_target = bool (backward compat preserved).
+         Logical labels shown in dis output instead of raw offsets.
+
+  ## Command-line options
+  3.13: python -m dis [-C] [-O] file   (-C=show-caches, -O=show-offsets)
+  3.14: python -m dis [-C] [-O] [-P] [-S] file  (-P=show-positions, -S=specialized)
+
+  ## Version history summary for dis.Instruction
+  3.4:  initial (opcode, opname, arg, argval, argrepr, offset, starts_line, is_jump_target)
+  3.11: positions field added
+  3.13: start_offset, cache_offset, end_offset, baseopname, baseopcode, jump_target,
+        oparg, line_number, cache_info added; starts_line changed bool; show_caches deprecated
+  3.14: show_positions added to Bytecode/dis()/disassemble()
+<<<END>>>
+
+SOURCE
+id: 2
+ts: 2026-05-28T00:02:00Z
+relevance: HIGH
+title: dis — Disassembler for Python bytecode (Python 3.12)
+authors: Python core developers
+year: 2024
+venue: docs.python.org/3.12/library/dis.html
+quality: DOCS
+url: https://docs.python.org/3.12/library/dis.html
+keywords: dis, Instruction 3.12, starts_line, positions, hasjrel, hasjabs, hasexc, show_caches
+cites:
+cited_by:
+content:
+  ## dis.Instruction fields in 3.12 ONLY
+
+  opcode        int
+  opname        str
+  arg           int|None
+  argval        Any
+  argrepr       str
+  offset        int
+  starts_line   int|None    ← LINE NUMBER if this instruction starts a new source line; else None
+                              (This is the OLD semantics, DIFFERENT from 3.13+ bool)
+  is_jump_target bool
+  positions     dis.Positions  (added 3.11)
+
+  MISSING in 3.12 (added later in 3.13):
+    baseopcode, baseopname, oparg, start_offset, cache_offset, end_offset,
+    line_number, jump_target, cache_info
+
+  ## dis.Bytecode in 3.12
+  Constructor:
+    dis.Bytecode(x, *, first_line=None, current_offset=None,
+                 show_caches=False, adaptive=False)
+  No show_offsets, no show_positions.
+
+  ## dis.get_instructions() in 3.12
+  show_caches=True produces separate Instruction entries for CACHE pseudo-instructions.
+  Each CACHE instruction has opname='CACHE'.
+
+  ## Opcode collections in 3.12
+  dis.hasarg    — added in 3.12
+  dis.hasexc    — added in 3.12
+  dis.hasjrel   — still used (not yet deprecated)
+  dis.hasjabs   — still used (not yet deprecated/empty)
+
+  ## Jump argument semantics in 3.12
+  "The jump, exception handling, and loop instruction arguments are now instruction offset
+   rather than byte offset." (Changed in 3.10)
+  "The arg of jump instructions is now the instruction offset relative to the instruction
+   following the CACHE entries, rather than to the start of the instruction."
+  (Changed 3.12 — so in 3.12 jump arg is relative to after-cache, transparent for forward jumps)
+
+  ## Key version change note (3.12 doc)
+  Changed in 3.12: Jump argument is now target instruction offset RELATIVE to instruction after CACHE.
+  Previously (3.11): relative to start of CACHE block.
+
+  ## CACHE behavior in 3.12
+  show_caches=True in get_instructions() → separate CACHE Instruction items emitted.
+  CACHE instructions have opname='CACHE', they count toward bytecode offsets.
+  When iterating to find block leaders: if show_caches=False (default), CACHE not in list.
+  Offsets in returned instructions are byte offsets (each instruction word = 2 bytes).
+
+  ## findlinestarts / findlabels
+  dis.findlinestarts(code) — yields (offset, lineno) pairs for all line starts
+  dis.findlabels(code)     — returns list of offsets that are jump targets (block leaders)
+  Both available in 3.12.
+<<<END>>>
+
+SOURCE
+id: 3
+ts: 2026-05-28T00:03:00Z
+relevance: HIGH
+title: dis.py source — Instruction class, _parse_exception_table, get_instructions implementation
+authors: Python core developers
+year: 2026
+venue: github.com/python/cpython/blob/main/Lib/dis.py
+quality: CODE
+url: https://github.com/python/cpython/blob/main/Lib/dis.py
+keywords: _parse_exception_table, _ExceptionTableEntry, _parse_varint, Instruction fields, get_instructions, Bytecode class
+cites:
+cited_by:
+content:
+  ## Instruction class definition (from dis.py main branch)
+  _Instruction namedtuple extended with:
+    Fields: opname, opcode, arg, argval, argrepr, offset, start_offset,
+            starts_line, line_number, label, positions, cache_info
+  Properties: oparg (alias for arg), baseopcode, baseopname, cache_offset, end_offset,
+              jump_target, is_jump_target
+
+  NOTE: The 'label' field appears in the internal namedtuple definition.
+  This is the logical label used for display (e.g., "L1") not the byte offset.
+
+  ## _parse_exception_table(code) — exact implementation
+
+  def _parse_exception_table(code):
+      iterator = iter(code.co_exceptiontable)
+      entries = []
+      try:
+          while True:
+              start = _parse_varint(iterator)*2
+              length = _parse_varint(iterator)*2
+              end = start + length
+              target = _parse_varint(iterator)*2
+              dl = _parse_varint(iterator)
+              depth = dl >> 1
+              lasti = bool(dl & 1)
+              entries.append(_ExceptionTableEntry(start, end, target, depth, lasti))
+      except StopIteration:
+          return entries
+
+  Return type: list of _ExceptionTableEntry namedtuples
+  _ExceptionTableEntry fields: start, end, target, depth, lasti
+
+  Semantics:
+    start  — byte offset of first instruction covered by this entry
+    end    — byte offset ONE PAST last instruction covered (exclusive)
+    target — byte offset of the exception handler
+    depth  — stack depth at start of try block (how many values to pop)
+    lasti  — bool; if True, push the offset of the failing instruction onto stack before jumping to handler
+
+  NOTE: *2 multiplication because co_exceptiontable stores instruction counts, not byte offsets.
+        Each instruction = 2 bytes (word). So multiply by 2 to get byte offsets.
+
+  ## _parse_varint(iterator) — varint decoding
+
+  Reads variable-length integer from iterator over co_exceptiontable bytes.
+  Format: 7-bit variant where each byte is SXdddddd:
+    S = start-of-entry marker (MSB) — set for first byte of each field
+    X = extend bit — if set, next byte continues this value
+    dddddd = 6 data bits per byte
+
+  ## Exception table entry interpretation for CFG edges
+
+  Entry (start=20, end=28, target=100, depth=3, lasti=False) means:
+    - Any instruction with byte offset in range [20, 28) (exclusive end)
+      can raise an exception that transfers control to byte offset 100
+    - At handler entry, stack is popped to depth=3, then exception pushed
+    - lasti=False means: do NOT push instruction offset before jumping
+
+  ## Jump target computation (from _get_jump_target() in dis.py)
+
+  For relative jumps:
+    target = offset + 2 + cache_size + arg * 2
+    (offset = instruction start, +2 = size of instruction word, cache_size = CACHE entries after)
+
+  For non-jump instructions: returns None
+
+  ## _unpack_opargs() — bytecode unpacking
+  Iterates over code.co_code (bytes), unpacking 2-byte (opcode, arg) words.
+  Handles EXTENDED_ARG: accumulates arg across multiple EXTENDED_ARG prefixes.
+
+  ## Bytecode class iteration
+  Yields Instruction objects; each Instruction represents one logical instruction.
+  In 3.13+: cache_info populated from CACHE entries that follow the instruction;
+            no separate CACHE Instruction items emitted.
+  In 3.12: if show_caches=True, separate CACHE Instruction items emitted after each
+            instruction that has caches.
+<<<END>>>
+
+SOURCE
+id: 4
+ts: 2026-05-28T00:04:00Z
+relevance: HIGH
+title: CPython InternalDocs/exception_handling.md — Exception Table Binary Format
+authors: Python core developers
+year: 2025
+venue: github.com/python/cpython/blob/main/InternalDocs/exception_handling.md
+quality: DOCS
+url: https://github.com/python/cpython/blob/main/InternalDocs/exception_handling.md
+keywords: co_exceptiontable, exception table format, varint encoding, assemble_exception_table, get_exception_handler, depth lasti
+cites:
+cited_by:
+content:
+  ## Binary format of co_exceptiontable
+
+  The exception table maps instruction offset ranges to their handler targets.
+  Each entry encodes: (start-offset, size, target, depth, lasti)
+    where:
+      start-offset = byte offset of first instruction in protected range
+      size         = (end - start), i.e. number of bytes covered (end is exclusive)
+      target       = byte offset of exception handler
+      depth        = stack depth at start of try block
+      lasti        = 1 bit bool; if True, push the failing instruction's offset before jumping
+
+  ## Varint encoding per field
+
+  Each byte of the encoding has format: SXdddddd
+    S (bit 7) = start-of-entry marker; set for first byte of each logical field
+    X (bit 6) = extend bit; if set, next byte continues the same value
+    dddddd (bits 5-0) = 6 data bits
+
+  Fields are stored in sequence: start, size, target, (depth<<1)|lasti
+    depth and lasti combined into single varint: value = (depth << 1) | lasti
+
+  Stored in instruction counts (not bytes); multiply by 2 for byte offsets.
+
+  ## Example encoding
+
+  Entry (start=20, end=28, target=100, depth=3, lasti=False):
+    start=20, size=8, target=100, depth_lasti=(3<<1)|0=6
+    Binary: 148, 8, 65, 36, 6   (five bytes)
+
+  ## Implementation references
+
+  Construction: assemble_exception_table() in Python/assemble.c
+  Runtime lookup: get_exception_handler() in Python/ceval.c
+  Python parsing: _parse_exception_table() in Lib/dis.py
+
+  ## RERAISE and lasti
+
+  At the end of a finally block, when any in-flight exception needs to be propagated,
+  RERAISE uses the lasti bit: if lasti=True was set for that entry, the original
+  instruction pointer was pushed before entering the handler, and RERAISE uses it
+  to restore the "last instruction" before re-raising.
+  This allows accurate traceback information during finally-block propagation.
+
+  ## CFG edge semantics
+
+  For CFG construction:
+    Exception table entry (start, end, target, depth, lasti) creates an exception edge
+    from every instruction I where start <= I.offset < end, to the basic block
+    starting at offset=target.
+    Multiple instructions can share the same exception handler target.
+    Entries can overlap or be nested (inner try within outer try).
+<<<END>>>
+
+
+SOURCE
+id: 5
+ts: 2026-05-28T00:05:00Z
+relevance: HIGH
+title: dis.py source — Instruction class, _parse_exception_table, _parse_varint, _get_jump_target, Bytecode (raw GitHub)
+authors: Python core developers
+year: 2026
+venue: raw.githubusercontent.com/python/cpython/main/Lib/dis.py
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython/main/Lib/dis.py
+keywords: Instruction namedtuple fields, _parse_exception_table, _parse_varint, _get_jump_target, _unpack_opargs, findlabels, findlinestarts, Bytecode class, _make_labels_map
+cites:
+cited_by:
+content:
+  ## Instruction namedtuple definition (verbatim)
+
+  _Instruction = collections.namedtuple(
+      "_Instruction",
+      [
+          'opname', 'opcode', 'arg', 'argval', 'argrepr',
+          'offset', 'start_offset', 'starts_line', 'line_number',
+          'label', 'positions', 'cache_info',
+      ],
+      defaults=[None, None, None]
+  )
+
+  IMPORTANT: 'label' is a field in the namedtuple (the logical label for display, e.g. "L1").
+  'is_jump_target' is now a PROPERTY: return self.label is not None
+  'jump_target' is a PROPERTY: calls _get_jump_target(self.opcode, self.arg, self.offset)
+  'oparg' is a PROPERTY: alias for self.arg
+  'baseopcode' is a PROPERTY: _deoptop(self.opcode)
+  'baseopname' is a PROPERTY: opname[self.baseopcode]
+  'cache_offset' is a PROPERTY: self.offset + 2
+  'end_offset' is a PROPERTY: self.cache_offset + _get_cache_size(_all_opname[self.opcode])*2
+
+  Instruction.make() static method:
+    def make(opname, arg, argval, argrepr, offset, start_offset, starts_line,
+             line_number, label=None, positions=None, cache_info=None):
+        return Instruction(opname, _all_opmap[opname], arg, argval, argrepr, offset,
+                           start_offset, starts_line, line_number, label, positions, cache_info)
+
+  ## _parse_varint (verbatim)
+
+  def _parse_varint(iterator):
+      b = next(iterator)
+      val = b & 63          # bits 0-5 of first byte
+      while b & 64:         # bit 6 = extend bit
+          val <<= 6
+          b = next(iterator)
+          val |= b & 63
+      return val
+
+  NOTE: This differs slightly from the inline-cache varint described in InternalDocs.
+  Here bits 0-5 are data (6 bits), bit 6 is extend. bit 7 (S=start-of-entry) is not checked
+  by _parse_varint — entries are already demarcated by sequential parsing order.
+
+  ## _parse_exception_table (verbatim)
+
+  def _parse_exception_table(code):
+      iterator = iter(code.co_exceptiontable)
+      entries = []
+      try:
+          while True:
+              start = _parse_varint(iterator)*2
+              length = _parse_varint(iterator)*2
+              end = start + length
+              target = _parse_varint(iterator)*2
+              dl = _parse_varint(iterator)
+              depth = dl >> 1
+              lasti = bool(dl & 1)
+              entries.append(_ExceptionTableEntry(start, end, target, depth, lasti))
+      except StopIteration:
+          return entries
+
+  Return type: list[_ExceptionTableEntry]
+  _ExceptionTableEntry = namedtuple('_ExceptionTableEntry', 'start end target depth lasti')
+  Fields:
+    start  — byte offset, INCLUSIVE lower bound of protected range
+    end    — byte offset, EXCLUSIVE upper bound (start + length*2)
+    target — byte offset of exception handler block leader
+    depth  — stack depth at entry to try block
+    lasti  — bool: if True, push the failing instruction's offset before handler entry
+
+  ## _get_jump_target (verbatim)
+
+  def _get_jump_target(op, arg, offset):
+      deop = _deoptop(op)
+      caches = _get_cache_size(_all_opname[deop])
+      if deop in hasjrel:
+          if _is_backward_jump(deop):
+              arg = -arg
+          target = offset + 2 + arg*2
+          target += 2 * caches
+      elif deop in hasjabs:
+          target = arg*2
+      else:
+          target = None
+      return target
+
+  NOTE: In 3.13, hasjabs is empty (all jumps are relative). Only hasjrel matters.
+  For backward jumps (JUMP_BACKWARD etc.), arg is negated.
+  Forward jump formula: offset + 2 + arg*2 + 2*cache_size
+    (offset+2 = past this instruction, arg*2 = instruction count to byte offset,
+     2*cache_size = skip over CACHE entries)
+
+  ## _unpack_opargs (verbatim)
+
+  def _unpack_opargs(code):
+      extended_arg = 0
+      extended_args_offset = 0
+      caches = 0
+      for i in range(0, len(code), 2):
+          if caches:
+              caches -= 1
+              continue
+          op = code[i]
+          deop = _deoptop(op)
+          caches = _get_cache_size(_all_opname[deop])
+          if deop in hasarg:
+              arg = code[i+1] | extended_arg
+              extended_arg = (arg << 8) if deop == EXTENDED_ARG else 0
+              if extended_arg >= _INT_OVERFLOW:
+                  extended_arg -= 2 * _INT_OVERFLOW
+          else:
+              arg = None
+              extended_arg = 0
+          if deop == EXTENDED_ARG:
+              extended_args_offset += 1
+              yield (i, i, op, arg)
+          else:
+              start_offset = i - extended_args_offset*2
+              yield (i, start_offset, op, arg)
+              extended_args_offset = 0
+
+  Yields: (offset, start_offset, op, arg)
+    offset — byte offset of THIS instruction word
+    start_offset — byte offset of first EXTENDED_ARG prefix (or same as offset if none)
+    op — raw opcode byte
+    arg — accumulated arg including EXTENDED_ARG prefixes
+
+  ## findlabels (verbatim)
+
+  def findlabels(code):
+      labels = []
+      for offset, _, op, arg in _unpack_opargs(code):
+          if arg is not None:
+              label = _get_jump_target(op, arg, offset)
+              if label is None:
+                  continue
+              if label not in labels:
+                  labels.append(label)
+      return labels
+
+  Returns list of byte offsets that are jump targets (block leaders).
+  Also used internally to build labels_map for the Bytecode display.
+
+  ## findlinestarts (verbatim)
+
+  def findlinestarts(code):
+      lastline = False
+      for start, end, line in code.co_lines():
+          if line is not lastline:
+              lastline = line
+              yield start, line
+      return
+
+  Yields: (offset, lineno) pairs where a new source line starts.
+  Uses co_lines() method (available since 3.10).
+
+  ## Bytecode.__init__ (verbatim key parts)
+
+  self.codeobj = co = _get_code_object(x)
+  self._linestarts = dict(findlinestarts(co))
+  self.exception_entries = _parse_exception_table(co)
+  ...
+
+  Key: exception_entries is populated on Bytecode construction.
+  Can access as bytecode_obj.exception_entries for CFG edge building.
+
+  ## Bytecode.__iter__ (key parts)
+
+  labels_map = _make_labels_map(original_code, self.exception_entries)
+  arg_resolver = ArgResolver(co_consts=co.co_consts, ...)
+  return _get_instructions_bytes(..., arg_resolver=arg_resolver)
+
+  Labels map uses BOTH jump targets (from _get_jump_target) AND exception handler targets
+  (from exception_entries) to assign logical labels.
+
+  ## _get_instructions_bytes (key parts)
+
+  starts_line computed from linestarts dict:
+    starts_line = offset in linestarts
+  line_number from linestarts[offset] if starts_line else carries forward local_line_number.
+
+  cache_info built by reading CACHE bytes from code array:
+    cache_info = [(name, size, data), ...] where data is raw bytes.
+
+  label = arg_resolver.get_label_for_offset(offset)
+  is_jump_target derived from: self.label is not None
+<<<END>>>
+
+SOURCE
+id: 6
+ts: 2026-05-28T00:06:00Z
+relevance: HIGH
+title: Python 3.14 opcode changes — RETURN_CONST removed, BEFORE_WITH removed, new opcodes
+authors: Python core developers
+year: 2024-2025
+venue: docs.python.org/3/whatsnew/3.14.html
+quality: DOCS
+url: https://docs.python.org/3/whatsnew/3.14.html
+keywords: RETURN_CONST removed, BEFORE_WITH removed, BEFORE_ASYNC_WITH removed, LOAD_SMALL_INT, LOAD_FAST_BORROW, LOAD_SPECIAL, POP_ITER, NOT_TAKEN, BUILD_TEMPLATE, BUILD_INTERPOLATION
+cites:
+cited_by:
+content:
+  ## Python 3.14 opcode additions and removals
+
+  REMOVED in 3.14:
+    RETURN_CONST   — existed in 3.12 and 3.13; removed in 3.14 (gh-125837, Mark Shannon)
+                     Was: return a constant directly from co_consts without loading.
+                     Now: RETURN_VALUE is used (with LOAD_CONST or LOAD_SMALL_INT preceding it).
+    BEFORE_WITH         — removed in 3.14
+    BEFORE_ASYNC_WITH   — removed in 3.14
+    (with/async-with now uses LOAD_SPECIAL instead)
+
+  ADDED in 3.14:
+    LOAD_SMALL_INT    — pushes a small integer equal to oparg to the stack
+    LOAD_FAST_BORROW  — reduced reference-counting overhead for local vars
+    LOAD_FAST_BORROW_LOAD_FAST_BORROW — optimized variant
+    LOAD_SPECIAL      — new instruction for with/async-with statements
+    POP_ITER          — pops loop iterator
+    NOT_TAKEN         — (branch prediction hint?)
+    LOAD_COMMON_CONSTANT — loads commonly-used constants
+    BUILD_TEMPLATE    — for f-string template construction
+    BUILD_INTERPOLATION — for f-string interpolation
+
+  ## CRITICAL for pflow CFG construction
+
+  RETURN_CONST status:
+    3.12: EXISTS — RETURN_CONST terminates a basic block (like RETURN_VALUE)
+    3.13: EXISTS — RETURN_CONST terminates a basic block
+    3.14: REMOVED — only RETURN_VALUE terminates via return
+
+  BEFORE_WITH status:
+    3.12: EXISTS — used for with-statement __enter__ call setup
+    3.13: EXISTS
+    3.14: REMOVED — with-statement now uses LOAD_SPECIAL
+
+  This means CFG terminator opcode lists MUST be version-gated.
+
+  ## Basic block terminators by version (compiled from multiple sources)
+
+  All versions (3.12, 3.13, 3.14):
+    RETURN_VALUE      — function return (always terminates)
+    RAISE_VARARGS     — raise with 0/1/2 args (always terminates)
+    RERAISE           — reraise exception (always terminates; oparg>0 pops lasti)
+    JUMP_FORWARD      — unconditional forward jump
+    JUMP_BACKWARD     — unconditional backward jump (loop back-edge)
+    POP_JUMP_IF_TRUE  — conditional jump
+    POP_JUMP_IF_FALSE — conditional jump
+    POP_JUMP_IF_NONE  — conditional jump
+    POP_JUMP_IF_NOT_NONE — conditional jump
+
+  3.12 and 3.13 only:
+    RETURN_CONST      — terminates block (removed in 3.14)
+
+  3.12 and 3.13:
+    BEFORE_WITH       — NOT a terminator; calls __enter__
+
+  3.14:
+    LOAD_SPECIAL      — NOT a terminator (replaces BEFORE_WITH but doesn't end block)
+
+  ## Jump instruction argument semantics (all 3.12-3.14)
+  All jumps are relative to instruction after CACHE entries.
+  No absolute jumps (hasjabs is empty since 3.13; was depopulated in 3.12 mostly).
+
+  ## RERAISE opcode details
+  RERAISE oparg=0: reraise exception from TOS (no lasti use)
+  RERAISE oparg=1: pop lasti from stack, set f_lasti, then reraise
+  Used at end of finally blocks when exception needs to propagate.
+
+  ## RAISE_VARARGS details
+  oparg=0: re-raise (must be inside except block)
+  oparg=1: raise exc (pops 1)
+  oparg=2: raise exc from cause (pops 2)
+<<<END>>>
+
+
+SOURCE
+id: 7
+ts: 2026-05-28T00:07:00Z
+relevance: HIGH
+title: Python/flowgraph.c — CPython internal CFG representation and construction
+authors: Python core developers
+year: 2026
+venue: github.com/python/cpython/blob/main/Python/flowgraph.c
+quality: CODE
+url: https://github.com/python/cpython/blob/main/Python/flowgraph.c
+keywords: basicblock struct, IS_SCOPE_EXIT_OPCODE, IS_UNCONDITIONAL_JUMP_OPCODE, basicblock_nofallthrough, label_exception_targets, _PyCfgExceptStack, b_preserve_lasti, b_except_handler
+cites:
+cited_by:
+content:
+  ## basicblock struct definition (verbatim from flowgraph.c)
+
+  typedef struct _PyCfgBasicblock {
+      struct _PyCfgBasicblock *b_list;       /* reverse linked list of blocks */
+      _PyJumpTargetLabel b_label;             /* jump target label, -1 if none */
+      struct _PyCfgExceptStack *b_exceptstack; /* exception stack at entry */
+      cfg_instr *b_instr;                    /* instruction array pointer */
+      struct _PyCfgBasicblock *b_next;       /* next block by control flow */
+      int b_iused;                           /* number of instructions used */
+      int b_ialloc;                          /* allocated instruction array size */
+      uint64_t b_unsafe_locals_mask;
+      int b_predecessors;                    /* predecessor block count */
+      int b_startdepth;                      /* stack depth upon entry */
+      unsigned b_preserve_lasti : 1;         /* exception handler preserves lasti */
+      unsigned b_visited : 1;                /* compiler pass visitor flag */
+      unsigned b_except_handler : 1;         /* marks exception targets */
+      unsigned b_cold : 1;                   /* non-perf-critical block flag */
+      unsigned b_warm : 1;                   /* definitely not cold flag */
+  } basicblock;
+
+  ## _PyCfgExceptStack
+
+  struct _PyCfgExceptStack {
+      basicblock *handlers[CO_MAXBLOCKS+2];
+      int depth;
+  };
+
+  ## Block termination detection
+
+  static inline int
+  basicblock_nofallthrough(const basicblock *b) {
+      cfg_instr *last = basicblock_last_instr(b);
+      return (last &&
+              (IS_SCOPE_EXIT_OPCODE(last->i_opcode) ||
+               IS_UNCONDITIONAL_JUMP_OPCODE(last->i_opcode)));
+  }
+
+  IS_SCOPE_EXIT_OPCODE — covers RETURN_VALUE, RAISE_VARARGS, RERAISE (and RETURN_CONST in 3.12/3.13)
+  IS_UNCONDITIONAL_JUMP_OPCODE — covers JUMP_FORWARD, JUMP_BACKWARD, JUMP_BACKWARD_NO_INTERRUPT
+
+  ## Public CFG API
+
+  cfg_builder *_PyCfgBuilder_New(void)
+  void _PyCfgBuilder_Free(cfg_builder *g)
+  int _PyCfgBuilder_CheckSize(cfg_builder *g)
+  int _PyCfgBuilder_Addop(cfg_builder *g, int opcode, int oparg, location loc)
+  int _PyCfgBuilder_UseLabel(cfg_builder *g, jump_target_label lbl)
+
+  ## Exception labeling
+
+  label_exception_targets() — depth-first traversal; copies exception stack at block
+    boundaries; marks each instruction's i_except field with active handler block.
+  SETUP_WITH / SETUP_CLEANUP pseudo-instructions trigger b_preserve_lasti flagging.
+
+  ## Finally block handling
+
+  From search result data and CPython documentation:
+  CPython DUPLICATES the finally clause body into the exception path AND the normal path.
+  Each try/finally compiles to:
+    1. The try body
+    2. (normal exit path) finally body copy + continuation
+    3. (exception path) finally body copy + RERAISE
+  The exception table points to the exception-path copy of the finally body.
+  This means a finally block may appear TWICE in the bytecode — once for normal flow,
+  once for exception flow (reached via exception table).
+
+  ## Instruction macros
+
+  #define INSTR_SET_OP1(I, OP, ARG) ...
+  #define INSTR_SET_OP0(I, OP) ...
+  #define INSTR_SET_LOC(I, LOC) ...
+
+  cfg_instr struct has fields: i_opcode, i_oparg, i_loc, i_except (pointer to handler block)
+
+  ## Optimization pipeline
+
+  optimize_cfg() orchestrates passes:
+    - constant folding
+    - jump threading
+    - redundant instruction removal
+    - SWAP optimization
+    - remove_redundant_nops_and_jumps()
+
+  Changes in optimization use NOP placeholders, later compacted.
+<<<END>>>
+
+SOURCE
+id: 8
+ts: 2026-05-28T00:08:00Z
+relevance: HIGH
+title: Python 3.14 What's New — bytecode/opcode changes
+authors: Python core developers
+year: 2025
+venue: docs.python.org/3/whatsnew/3.14.html
+quality: DOCS
+url: https://docs.python.org/3/whatsnew/3.14.html
+keywords: RETURN_CONST removed, BEFORE_WITH removed, LOAD_SMALL_INT, LOAD_FAST_BORROW, LOAD_SPECIAL, POP_ITER, NOT_TAKEN, BUILD_TEMPLATE, BUILD_INTERPOLATION, BINARY_SUBSCR removed, show_positions
+cites:
+cited_by:
+content:
+  ## Python 3.14 opcode changes (confirmed from docs + issue #135447)
+
+  REMOVED in 3.14:
+    RETURN_CONST        — removed (gh-125837, Mark Shannon)
+                          Was in 3.12 and 3.13. Now use LOAD_CONST/LOAD_SMALL_INT + RETURN_VALUE.
+    BEFORE_WITH         — removed
+    BEFORE_ASYNC_WITH   — removed
+                          Replaced by LOAD_SPECIAL instruction.
+    BINARY_SUBSCR       — removed (per gh-135447 issue report)
+
+  ADDED in 3.14:
+    LOAD_SMALL_INT(i)   — pushes small integer equal to oparg i to the stack
+                          (replaces part of what LOAD_CONST + RETURN_CONST did)
+    LOAD_FAST_BORROW    — reduced reference-counting for local vars where frame outlives ref
+    LOAD_FAST_BORROW_LOAD_FAST_BORROW — optimized variant
+    LOAD_SPECIAL(namei) — special method lookup; for with/async-with
+                          If type(STACK[-1]).__xxx__ is a method: push (method, self)
+                          If not a method: push (value, NULL)
+                          namei encodes which special method via dedicated enum
+    POP_ITER            — removes iterator from top of stack; added 3.14
+    NOT_TAKEN           — branch prediction hint (undocumented per gh-135447)
+    BUILD_TEMPLATE      — for f-string template construction (undocumented per gh-135447)
+    BUILD_INTERPOLATION — for f-string interpolation (undocumented per gh-135447)
+    LOAD_COMMON_CONSTANT — loads commonly-used constants
+
+  DOCUMENTATION GAPS (per github.com/python/cpython/issues/135447):
+    NOT_TAKEN, POP_ITER, BUILD_TEMPLATE, BUILD_INTERPOLATION missing from dis docs
+    as of issue filing. PRs #135478, #135803, #139399 filed to fix.
+    Changes after 3.14a2 (magic number 3609) were underdocumented.
+
+  ## dis module changes in 3.14
+    show_positions parameter added to: dis.Bytecode, dis.dis(), dis.distb(),
+      dis.disassemble(), dis.disco()
+    --show-positions / -P command-line flag added
+    --specialized / -S command-line flag added
+
+  ## With-statement in 3.14
+
+  BEFORE_WITH removed; LOAD_SPECIAL replaces it.
+  Pattern for `with ctx as x:` in 3.14:
+    LOAD_SPECIAL  (loads __enter__ method)
+    CALL          (calls __enter__, result bound to x)
+    ... body ...
+    LOAD_SPECIAL  (loads __exit__ method — implicitly covered by exception table entry)
+    (exception path) WITH_EXCEPT_START → POP_JUMP_IF_TRUE → RERAISE
+
+  Exact oparg encoding for LOAD_SPECIAL: uses dedicated enum for __enter__/__exit__ etc.
+
+  ## CFG terminator opcode list for 3.14
+
+  Unconditional terminators (no fallthrough):
+    RETURN_VALUE
+    RAISE_VARARGS
+    RERAISE
+    JUMP_FORWARD
+    JUMP_BACKWARD
+    JUMP_BACKWARD_NO_INTERRUPT
+
+  Conditional terminators (two successors):
+    POP_JUMP_IF_TRUE
+    POP_JUMP_IF_FALSE
+    POP_JUMP_IF_NONE
+    POP_JUMP_IF_NOT_NONE
+    FOR_ITER
+    SEND
+
+  NOT a terminator (despite being for context managers):
+    LOAD_SPECIAL (just sets up for __enter__/__exit__ call)
+    WITH_EXCEPT_START (only in exception handler path)
+<<<END>>>
+
+SOURCE
+id: 9
+ts: 2026-05-28T00:09:00Z
+relevance: HIGH
+title: Python 3.12 What's New — bytecode/opcode changes
+authors: Python core developers
+year: 2024
+venue: docs.python.org/3/whatsnew/3.12.html
+quality: DOCS
+url: https://docs.python.org/3/whatsnew/3.12.html
+keywords: RETURN_CONST added, LOAD_FAST_AND_CLEAR, LOAD_FAST_CHECK, LOAD_SUPER_ATTR, CLEANUP_THROW, hasarg, hasexc, POP_JUMP_IF_* no longer pseudo, jump argument semantics
+cites:
+cited_by:
+content:
+  ## Python 3.12 opcode additions
+
+  ADDED in 3.12:
+    RETURN_CONST(consti)     — return co_consts[consti]; terminates block
+                               (gh-101632, Wenyang Wang)
+    BINARY_SLICE             — replaces slice subscript operations (gh-94163, Mark Shannon)
+    STORE_SLICE              — (gh-94163, Mark Shannon)
+    CALL_INTRINSIC_1         — call intrinsic with one arg (gh-99005, Mark Shannon)
+    CALL_INTRINSIC_2         — call intrinsic with two args (gh-101799, Irit Katriel)
+    CLEANUP_THROW            — exception cleanup for throw()/close() on generators (gh-90997)
+    END_SEND                 — generator send protocol (gh-103082)
+    LOAD_FAST_AND_CLEAR      — for PEP 709 comprehension inlining (gh-101441)
+    LOAD_FAST_CHECK          — check if local var initialized (gh-93143)
+    LOAD_FROM_DICT_OR_DEREF  — PEP 695 type params (gh-103764)
+    LOAD_FROM_DICT_OR_GLOBALS — PEP 695 type params (gh-103764)
+    LOAD_LOCALS              — PEP 695 type params (gh-103764)
+    LOAD_SUPER_ATTR          — optimized super() calls; 2x-5x speedup (gh-103497)
+
+  REMOVED in 3.12:
+    LOAD_METHOD      — merged into LOAD_ATTR; low bit of LOAD_ATTR oparg now signals method-call
+    JUMP_IF_FALSE_OR_POP  — removed (gh-102859)
+    JUMP_IF_TRUE_OR_POP   — removed (gh-102859)
+    PRECALL          — removed (gh-92925)
+    LOAD_CLASSDEREF  — replaced by LOAD_LOCALS + LOAD_FROM_DICT_OR_DEREF
+
+  ## dis module changes in 3.12
+    dis.hasarg  — added (gh-94216, Irit Katriel)
+    dis.hasexc  — added (gh-94216, Irit Katriel)
+    Pseudo instructions now exposed in collections
+
+  ## Jump argument semantics change in 3.12
+  "Jump argument is now the instruction offset relative to the instruction following
+   the CACHE entries, rather than to the start of the instruction."
+  (Was: relative to start of instruction in 3.11)
+
+  ## POP_JUMP_IF_* change in 3.12
+  POP_JUMP_IF_TRUE, POP_JUMP_IF_FALSE, POP_JUMP_IF_NOT_NONE, POP_JUMP_IF_NONE
+  no longer pseudo-instructions in 3.12 (became real opcodes).
+
+  ## COMPARE_OP change in 3.12
+  cmp_op index now stored in four HIGHEST bits (not four lowest).
+
+  ## LOAD_ATTR change in 3.12
+  Low bit signals method-call behavior (merging old LOAD_METHOD semantics).
+  oparg bit 0 = 0: load attribute (old LOAD_ATTR)
+  oparg bit 0 = 1: load method (old LOAD_METHOD)
+
+  ## BEFORE_WITH in 3.12
+  BEFORE_WITH exists in 3.12; NOT yet removed.
+  Used for with-statement __enter__ call setup.
+
+  ## try/finally duplication note
+  "CPython duplicates the code for a finally clause" — confirmed from python-dev mailing list.
+  Both normal-exit and exception-exit paths contain copies of the finally body.
+<<<END>>>
+
+SOURCE
+id: 10
+ts: 2026-05-28T00:10:00Z
+relevance: HIGH
+title: Python Bytecode Instructions reference — control-flow-relevant opcodes (3.14 docs)
+authors: Python core developers
+year: 2026
+venue: docs.python.org/3/library/dis.html#python-bytecode-instructions
+quality: DOCS
+url: https://docs.python.org/3/library/dis.html#python-bytecode-instructions
+keywords: RETURN_VALUE, RERAISE, RAISE_VARARGS, PUSH_EXC_INFO, POP_EXCEPT, CHECK_EXC_MATCH, WITH_EXCEPT_START, CLEANUP_THROW, JUMP_FORWARD, JUMP_BACKWARD, POP_JUMP_IF_TRUE, FOR_ITER, SEND, LOAD_SPECIAL, POP_ITER
+cites:
+cited_by:
+content:
+  ## Return instructions
+
+  RETURN_VALUE
+    Returns STACK[-1] to caller. No oparg.
+    Terminates basic block (scope exit).
+    All versions 3.12-3.14.
+
+  RETURN_CONST(consti)
+    3.12-3.13 ONLY: Returns co_consts[consti] without loading.
+    Terminates basic block.
+    REMOVED in 3.14.
+
+  RETURN_GENERATOR
+    Creates generator/coroutine/async-generator from current frame; returns it.
+    Used as first opcode in generator function code objects.
+    Added 3.11.
+
+  ## Exception instructions
+
+  RAISE_VARARGS(argc)
+    oparg=0: re-raise current exception
+    oparg=1: raise STACK[-1]
+    oparg=2: raise STACK[-2] from STACK[-1]
+    Terminates basic block (unconditionally).
+
+  RERAISE(lasti)
+    Re-raises TOS exception.
+    oparg non-zero: pop additional value from stack, use to set f_lasti of current frame.
+    Added 3.9. Changed 3.11 (exception = 1 item, not 3).
+    Terminates basic block (unconditionally).
+
+  PUSH_EXC_INFO
+    Pops value from stack.
+    Pushes current exception to top.
+    Pushes popped value back.
+    Used in exception handlers.
+    Added 3.11.
+    NOT a terminator.
+
+  POP_EXCEPT
+    Pops exception state restoration value.
+    Changed 3.11 (1 item, not 3).
+    NOT a terminator.
+
+  CHECK_EXC_MATCH
+    Tests STACK[-2] isinstance STACK[-1]. Pops STACK[-1], pushes bool result.
+    Added 3.11.
+    NOT a terminator.
+
+  CHECK_EG_MATCH
+    Exception group matching for except*.
+    Added 3.11.
+    NOT a terminator.
+
+  CLEANUP_THROW
+    Handles exceptions during throw()/close() calls.
+    If STACK[-1] is StopIteration: pop 3, push StopIteration.value.
+    Else: reraise STACK[-1].
+    Added 3.12.
+    Conditionally terminates (acts like jump in exception case).
+
+  WITH_EXCEPT_START
+    Calls __exit__(type, val, tb) at stack position 4 for exceptions in with-body.
+    Used when exception occurs in with-statement body.
+    Added 3.9. Changed 3.11 (__exit__ now at position 4, not 7).
+    NOT a terminator; result used by POP_JUMP_IF_TRUE to exit or RERAISE.
+    In 3.12+: exception table entry covers the with-body, handler calls WITH_EXCEPT_START.
+
+  ## Jump instructions
+
+  JUMP_FORWARD(delta)
+    Increment bytecode counter by delta.
+    Unconditional. Terminates block.
+
+  JUMP_BACKWARD(delta)
+    Decrement bytecode counter by delta. Checks interrupts.
+    Unconditional. Terminates block.
+    Added 3.11.
+
+  JUMP_BACKWARD_NO_INTERRUPT(delta)
+    Backward jump without interrupt check.
+    Unconditional. Terminates block.
+    Added 3.11.
+
+  POP_JUMP_IF_TRUE(delta)
+    If STACK[-1] is true: increment counter by delta. Pop STACK[-1].
+    Conditional. Two successors: jump target + fallthrough.
+    Changed 3.11 (relative delta, was absolute; pseudo-instruction).
+    Changed 3.12 (no longer pseudo).
+    Changed 3.13 (requires exact bool operand).
+
+  POP_JUMP_IF_FALSE(delta)
+    If STACK[-1] is false: increment counter by delta. Pop STACK[-1].
+    Conditional. Two successors.
+    Same version history as POP_JUMP_IF_TRUE.
+
+  POP_JUMP_IF_NOT_NONE(delta)
+    If STACK[-1] is not None: jump. Pop.
+    Conditional. Added 3.11. Changed 3.12 (no longer pseudo).
+
+  POP_JUMP_IF_NONE(delta)
+    If STACK[-1] is None: jump. Pop.
+    Conditional. Added 3.11. Changed 3.12 (no longer pseudo).
+
+  FOR_ITER(delta)
+    Call STACK[-1].__next__(). Push new value, or jump delta if exhausted.
+    Conditional terminator (two successors).
+    Changed 3.12 (iterator no longer popped when exhausted until 3.12+).
+
+  SEND(delta)
+    STACK[-1] = STACK[-2].send(STACK[-1]). For yield-from/await.
+    If StopIteration raised: pop TOS, push .value, jump delta.
+    Conditional terminator.
+    Added 3.11.
+
+  ## Context manager / with-statement instructions
+
+  BEFORE_WITH
+    3.12 and 3.13 ONLY.
+    Sets up with-statement: loads __exit__, calls __enter__, result left on stack.
+    REMOVED in 3.14.
+    NOT a basic-block terminator.
+
+  LOAD_SPECIAL(namei)
+    3.14+. Replaces BEFORE_WITH and BEFORE_ASYNC_WITH.
+    Performs special method lookup on STACK[-1].
+    oparg: encodes which special method (via dedicated enum).
+    Not a basic-block terminator.
+
+  ## Iteration
+
+  POP_ITER
+    3.14+. Removes iterator from TOS.
+    Added 3.14.
+
+  ## Key CFG construction note
+
+  For CFG building from bytecode:
+  Block leaders are:
+    1. First instruction in code object
+    2. Any instruction targeted by a jump (is_jump_target=True / label is not None)
+    3. Any instruction targeted by an exception table entry (target field)
+    4. Instruction immediately after an unconditional terminator (dead code / new block start)
+
+  Exception edges: for each exception table entry (start, end, target):
+    Every instruction with start <= offset < end has an exception edge to target.
+    The instruction at target is a block leader; its block is an exception handler.
+    b_except_handler = True for that block in CPython's internal representation.
+<<<END>>>
+
+
+SOURCE
+id: 11
+ts: 2026-05-28T00:11:00Z
+relevance: HIGH
+title: pycore_opcode_metadata.h — opcode flag definitions and IS_PSEUDO_INSTR macro
+authors: Python core developers (generated file)
+year: 2026
+venue: raw.githubusercontent.com/python/cpython/main/Include/internal/pycore_opcode_metadata.h
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython/main/Include/internal/pycore_opcode_metadata.h
+keywords: HAS_ARG_FLAG, HAS_JUMP_FLAG, HAS_ERROR_FLAG, HAS_ESCAPES_FLAG, IS_PSEUDO_INSTR, opcode flags, SETUP_FINALLY, SETUP_CLEANUP, SETUP_WITH, POP_BLOCK
+cites:
+cited_by:
+content:
+  ## IS_PSEUDO_INSTR macro (verbatim)
+
+  #define IS_PSEUDO_INSTR(OP)  ( \
+      ((OP) == LOAD_CLOSURE) || \
+      ((OP) == STORE_FAST_MAYBE_NULL) || \
+      ((OP) == ANNOTATIONS_PLACEHOLDER) || \
+      ((OP) == JUMP) || \
+      ((OP) == JUMP_NO_INTERRUPT) || \
+      ((OP) == JUMP_IF_FALSE) || \
+      ((OP) == JUMP_IF_TRUE) || \
+      ((OP) == SETUP_FINALLY) || \
+      ((OP) == SETUP_CLEANUP) || \
+      ((OP) == SETUP_WITH) || \
+      ((OP) == POP_BLOCK) || \
+      0)
+
+  These are pseudo-instructions: emitted by codegen but never reach compiled bytecode.
+  Replaced by exception table entries + real opcodes during assembly.
+
+  ## Opcode flag definitions (verbatim)
+
+  HAS_ARG_FLAG        = 1   — instruction has argument
+  HAS_CONST_FLAG      = 2   — references constant table
+  HAS_NAME_FLAG       = 4   — references name table
+  HAS_JUMP_FLAG       = 8   — control flow instruction
+  HAS_FREE_FLAG       = 16  — references free variables
+  HAS_LOCAL_FLAG      = 32  — references local variables
+  HAS_EVAL_BREAK_FLAG = 64  — allows evaluation break (check signals)
+  HAS_ERROR_FLAG      = 256 — can raise exceptions
+  HAS_ESCAPES_FLAG    = 512 — may transfer control out of current instruction sequence
+
+  ## Metadata for key opcodes (from _PyOpcode_metadata table)
+
+  RETURN_VALUE: format=INSTR_FMT_IX, flags=HAS_ESCAPES_FLAG|HAS_NEEDS_GUARD_IP_FLAG
+    pops=1, pushes=1 (effectfully exits)
+  RERAISE: format=INSTR_FMT_IB, flags=HAS_ARG_FLAG|HAS_ERROR_FLAG|HAS_ERROR_NO_POP_FLAG|HAS_ESCAPES_FLAG
+    pops=1+oparg
+  RAISE_VARARGS: format=INSTR_FMT_IB, flags=HAS_ARG_FLAG
+    pops=oparg, pushes=0
+  JUMP_FORWARD: format=INSTR_FMT_IB, flags=HAS_ARG_FLAG|HAS_JUMP_FLAG
+    pops=0, pushes=0
+  JUMP_BACKWARD: format=INSTR_FMT_IBC, flags=HAS_JUMP_FLAG|HAS_EVAL_BREAK_FLAG
+    pops=0, pushes=0
+
+  ## IS_TERMINATOR_OPCODE
+  NOT explicitly defined as a macro in this header.
+  Terminator identification is done through IS_SCOPE_EXIT_OPCODE + IS_UNCONDITIONAL_JUMP_OPCODE
+  in flowgraph.c; these in turn reference opcode properties.
+  From context: IS_SCOPE_EXIT_OPCODE covers opcodes with HAS_ESCAPES_FLAG that return/raise.
+
+  ## Note on generated nature
+  pycore_opcode_metadata.h is generated by Tools/cases_generator/generate_cases.py.
+  Not manually edited. Regenerated whenever Python/bytecodes.c changes.
+<<<END>>>
+
+SOURCE
+id: 12
+ts: 2026-05-28T00:12:00Z
+relevance: HIGH
+title: CPython codegen.c — try/finally and try/except compilation (compiler_try_finally, compiler_try_except)
+authors: Python core developers
+year: 2026
+venue: raw.githubusercontent.com/python/cpython/main/Python/codegen.c
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython/main/Python/codegen.c
+keywords: codegen_try_finally, codegen_try_except, SETUP_FINALLY, SETUP_CLEANUP, PUSH_EXC_INFO, RERAISE, POP_EXCEPT, CHECK_EXC_MATCH, POP_JUMP_IF_FALSE, codegen_with, BEFORE_WITH
+cites:
+cited_by:
+content:
+  ## Function declarations (from codegen.c)
+
+  static int codegen_with(compiler *, stmt_ty);
+  static int codegen_async_with(compiler *, stmt_ty);
+  static int codegen_with_inner(compiler *, stmt_ty, int);
+  static int codegen_async_with_inner(compiler *, stmt_ty, int);
+
+  NOTE: Implementations of codegen_with / codegen_async_with not extractable from
+  truncated fetch. Use information from dis output examples instead (see record 13).
+
+  ## codegen_try_finally() — key opcode sequence
+
+  Pseudo-instructions emitted (before assembly):
+    SETUP_FINALLY  (pseudo: marks start of try block; becomes exception table entry)
+    <body>
+    POP_BLOCK      (pseudo: marks end of protected region)
+    <finally_body> (normal exit copy)
+    JUMP <after>
+    SETUP_CLEANUP  (pseudo: marks exception handler entry)
+    PUSH_EXC_INFO
+    <finally_body> (exception path copy — DUPLICATED!)
+    RERAISE        (re-raise after finally)
+
+  Key: finally body IS DUPLICATED. One copy for normal exit, one for exception path.
+  The duplication happens before the CFG optimization pass.
+
+  ## codegen_try_except() — key opcode sequence
+
+  SETUP_FINALLY  (pseudo: try block start)
+  <body>
+  POP_BLOCK      (pseudo: end of protected region)
+  JUMP <after>
+  SETUP_CLEANUP  (pseudo: exception handler)
+  PUSH_EXC_INFO
+  [for each except clause:]
+    CHECK_EXC_MATCH
+    POP_JUMP_IF_FALSE <next_handler>
+    <handler_body>
+    POP_EXCEPT
+    JUMP <after>
+  RERAISE        (if no handler matched)
+  <after>:
+
+  ## codegen_try_star_except() (for except*)
+
+  Uses CHECK_EG_MATCH for exception group matching (PEP 654).
+  CALL_INTRINSIC_2 with INTRINSIC_PREP_RERAISE_STAR.
+  BUILD_LIST for collecting re-raised exceptions.
+
+  ## Pseudo-instruction to real bytecode transformation
+
+  SETUP_FINALLY → exception table entry: (start, end, target, depth, lasti)
+  SETUP_CLEANUP → exception table entry
+  SETUP_WITH    → exception table entry
+  POP_BLOCK     → removed (no bytecode emitted)
+
+  The transformation occurs during the assembly pass, NOT during codegen.
+  At Python level, dis shows ONLY the real bytecode after transformation.
+
+  ## compile.c vs codegen.c split (since 3.12-3.13 timeframe)
+
+  compile.c was split into compile.c (compiler state management) + codegen.c (code generation).
+  See gh-121404 for the split. Both files are in Python/ directory.
+<<<END>>>
+
+
+SOURCE
+id: 13
+ts: 2026-05-28T00:13:00Z
+relevance: HIGH
+title: co_lines(), co_positions(), PyCode_Addr2Location — source position mapping API
+authors: Python core developers
+year: 2026
+venue: docs.python.org/3/c-api/code.html + peps.python.org/pep-0626/ + InternalDocs/code_objects.md
+quality: DOCS
+url: https://docs.python.org/3/c-api/code.html
+keywords: co_lines, co_positions, co_linetable, PyCode_Addr2Line, PyCode_Addr2Location, PEP 626, source position, None positions
+cites: PEP 626
+cited_by:
+content:
+  ## co_lines() method (PEP 626, added 3.10)
+
+  code.co_lines()
+  Returns: iterator of (start, end, line) tuples
+    start — byte offset (inclusive) of range start
+    end   — byte offset (exclusive) of range end
+    line  — int line number, or None for instructions without source line
+  Properties:
+    - First range starts at offset 0
+    - Ranges are non-decreasing and consecutive
+    - Final range ends at bytecode size
+    - Zero-width ranges (start == end) permitted for eliminated source lines
+  Semantics: gives line number of instructions in [start, end).
+  If line is None: that instruction range has no associated source line.
+
+  ## co_positions() method (added 3.11)
+
+  code.co_positions()
+  Returns: iterator of (line, end_line, column, end_column) tuples
+    ONE TUPLE PER INSTRUCTION (including CACHE instructions if present)
+    tuple values may be None if position information is not available
+  Key: iterator advances one step per instruction INCLUDING cache entries.
+  dis._get_instructions_bytes() calls: for _ in range(caches): next(co_positions, ())
+    to skip cache-entry tuples when building Instruction objects.
+
+  dis.Positions namedtuple fields map directly from co_positions() tuple:
+    Positions(lineno, end_lineno, col_offset, end_col_offset)
+
+  ## co_linetable encoding (internal format)
+
+  Compact encoding in co_linetable bytes.
+  Control byte has bit 7 set; optional continuation bytes follow.
+  Entry types (code in bits 3-0 of control byte):
+    0-9:  Short form — two bytes; start_col = (code*8) + ((second_byte>>4)&7)
+    10-12: One-line form — single-line entries with unsigned byte columns
+    13:   No column info — omits column data
+    14:   Long form — full 4-tuple with varint encoding
+    15:   No location — placeholder (maps to None in co_positions)
+
+  ## PyCode_Addr2Line (C API)
+
+  int PyCode_Addr2Line(PyCodeObject *co, int byte_offset)
+  Returns: line number of instruction at or before byte_offset
+  For frame use, prefer PyFrame_GetLineNumber().
+  For iteration, prefer PEP 626 co_lines().
+
+  ## PyCode_Addr2Location (C API, added 3.11)
+
+  int PyCode_Addr2Location(PyObject *co, int byte_offset,
+                            int *start_line, int *start_column,
+                            int *end_line, int *end_column)
+  Returns: 1 on success, 0 on failure.
+  Sets output parameters; sets to 0 when information unavailable.
+
+  ## co_lnotab (deprecated)
+
+  Deprecated in 3.10, scheduled for removal in 3.12.
+  Was: compact bytecode-to-line mapping.
+  Now lazily created for backward compat.
+  Tools MUST use co_lines() instead.
+
+  ## dis.findlinestarts(code) — Python-level API
+
+  def findlinestarts(code):
+      lastline = False
+      for start, end, line in code.co_lines():
+          if line is not lastline:
+              lastline = line
+              yield start, line
+  Yields (offset, lineno) for each new source line.
+  Only yields when line changes (not every instruction).
+  Uses co_lines() which returns None for instructions without source.
+
+  ## Gotchas for pflow
+
+  1. Positions can be None: some instructions (especially compiler-generated
+     ones like RESUME, PUSH_EXC_INFO, POP_EXCEPT) may have no source position.
+     instr.positions may have all-None fields.
+
+  2. co_positions() yields one tuple per CACHE instruction too.
+     When iterating with CACHE shown, must consume extra position tuples.
+     dis._get_instructions_bytes does: for _ in range(caches): next(co_positions, ())
+
+  3. starts_line semantics:
+     3.12: starts_line = int|None (the line number itself or None)
+     3.13+: starts_line = bool; line_number = int|None
+
+  4. For 3.12, to get current line of an instruction:
+     Track last seen starts_line value across iteration.
+     Or use dict(findlinestarts(co)) and check if offset in that dict.
+<<<END>>>
+
+SOURCE
+id: 14
+ts: 2026-05-28T00:14:00Z
+relevance: HIGH
+title: bytecode library — ControlFlowGraph, TryBegin/TryEnd, ExceptionTableEntry API
+authors: Florent Xicluna, Victor Stinner, et al.
+year: 2024
+venue: bytecode.readthedocs.io/en/latest/api.html
+quality: DOCS
+url: https://bytecode.readthedocs.io/en/latest/api.html
+keywords: BasicBlock, ControlFlowGraph, TryBegin, TryEnd, ExceptionTableEntry, Instr, is_final, from_bytecode
+cites:
+cited_by:
+content:
+  ## BasicBlock
+
+  A straight-line code sequence with no branches in except at entry, no branches
+  out except at exit.
+  Fields:
+    next_block — next BasicBlock or None
+
+  Methods:
+    legalize(first_lineno)  — validates instructions, removes SetLineno
+    get_jump()              — returns target BasicBlock or None
+    get_trailing_end(index) — returns first TryEnd after position
+
+  ## ControlFlowGraph (CFG)
+
+  Inherits from BaseBytecode; comprises BasicBlock list.
+
+  Key methods:
+    from_bytecode(bytecode)   — converts labels to blocks, splits after final/conditional jumps
+    add_block(instructions)   — creates new BasicBlock
+    split_block(block, index) — splits block at instruction, returns new block
+    get_dead_blocks()         — retrieves unreachable blocks
+    to_bytecode()             — converts back to label-based representation
+    compute_stacksize()       — calculates required stack depth
+
+  ## Instr class
+
+  Constructor: Instr(name, arg, lineno=None, location=None)
+  Fields:
+    name     — operation name (str)
+    arg      — varies by type (Label, BasicBlock, CellVar, FreeVar, str, int, Compare)
+    lineno   — int|None|UNSET
+    location — InstrLocation|None (lineno, end_lineno, col_offset, end_col_offset)
+    opcode   — int
+
+  Methods:
+    has_jump()       — True if instruction has jump target
+    is_cond_jump()   — True if conditional jump
+    is_uncond_jump() — True if unconditional jump
+    is_final()       — True for RETURN_VALUE, RAISE_VARARGS, unconditional jumps
+
+  ## TryBegin (pseudo-instruction for exception handler entry)
+
+  Fields:
+    target      — Label or BasicBlock for exception jump destination
+    push_lasti  — bool: whether to push instruction offset before exception handler
+    stack_depth — int|UNSET: stack depth restored when handling exception
+
+  ## TryEnd (pseudo-instruction marking end of protected region)
+
+  Fields:
+    entry — TryBegin: references corresponding begin
+
+  TryEnd can appear after final instructions or at block start after conditional jumps.
+
+  ## ExceptionTableEntry (concrete level)
+
+  Fields:
+    start_offset  — instruction byte offset (inclusive start)
+    stop_offset   — instruction byte offset (inclusive stop)
+    target        — handler block offset
+    stack_depth   — exception context stack depth
+    push_lasti    — bool: push lasti before handler
+
+  ## from_bytecode() behavior
+
+  Converts label-based bytecode to CFG by:
+    - Converting labels to block pointers
+    - Splitting after final and conditional jump instructions
+  Result: each BasicBlock ends with either a final instruction, a conditional jump,
+  or falls through to next_block.
+
+  ## Exception handling in CFG
+
+  Represented via TryBegin/TryEnd pairs in the instruction stream.
+  TryBegin.target points to the exception handler block.
+  After assembling: TryBegin/TryEnd pairs converted to exception table entries.
+<<<END>>>
+
+SOURCE
+id: 15
+ts: 2026-05-28T00:15:00Z
+relevance: HIGH
+title: CPython zero-cost exception handling — bpo-40222 / gh-84403 and implementation details
+authors: Mark Shannon (primary), Python core developers
+year: 2021-2022
+venue: github.com/python/cpython/issues/84403, github.com/python/cpython/pull/25729
+quality: CODE
+url: https://github.com/python/cpython/issues/84403
+keywords: zero-cost exceptions, SETUP_FINALLY removed, exception table PEP 3.11, co_exceptiontable, lasti bit, depth field
+cites:
+cited_by:
+content:
+  ## Zero-cost exception handling concept (implemented in 3.11)
+
+  Key idea: Replace SETUP_FINALLY/POP_BLOCK pseudo-instructions with metadata.
+  This metadata = exception table in co_exceptiontable.
+  Entering a try block costs 0 instructions (previously cost 2: SETUP_FINALLY + stack).
+  Exception lookup at runtime only happens when exception actually occurs.
+
+  ## Implementation: SETUP_FINALLY → exception table entry
+
+  Before (3.10):
+    SETUP_FINALLY  L
+    <try body>
+    POP_BLOCK
+    <normal continuation>
+    L:
+    <exception handler>
+
+  After (3.11+):
+    <try body>       ← protected by exception table entry: (start, end, L, depth, lasti)
+    <normal continuation>
+    L:               ← exception handler (block leader)
+    <exception handler>
+
+  SETUP_FINALLY and POP_BLOCK no longer appear in compiled bytecode.
+  They remain as pseudo-instructions in the compiler's intermediate representation.
+
+  ## Stack on exception handler entry (3.11+)
+
+  When exception occurs at instruction I:
+    1. Stack is popped to depth D (from exception table entry's depth field)
+    2. If lasti=True: push I's bytecode offset (for RERAISE in finally)
+    3. Push the exception object
+    4. Jump to target T
+
+  So handler block receives: [...stack at depth D..., (lasti,) exception]
+  PUSH_EXC_INFO at handler start further adjusts the exception stack.
+
+  ## Stack depth (depth field) semantics
+
+  depth = number of values on stack at entry to the try block (before the try).
+  On exception: stack is truncated to this depth, then lasti/exception pushed on top.
+
+  ## lasti field semantics
+
+  lasti=True: The exception handler needs to know which instruction raised,
+              so the offset of the raising instruction is pushed before the exception.
+  Used in finally blocks so RERAISE can restore f_lasti to point to original raise site.
+
+  ## Impact on CPython interpreter (ceval.c)
+
+  When exception occurs:
+    get_exception_handler(frame, offset) → searches co_exceptiontable
+    Returns (target, depth, lasti) if found, else propagates to caller.
+    Implemented as binary search or linear scan over exception table entries.
+
+  ## Exception table entry ordering
+
+  Entries sorted by start offset.
+  For nested try blocks: inner entries appear before outer entries (more specific handler first).
+  At runtime: first matching entry (where start <= offset < end) is used.
+<<<END>>>
+
+
+SOURCE
+id: 16
+ts: 2026-05-28T00:16:00Z
+relevance: HIGH
+title: Python/assemble.c — assemble_exception_table, varint encoding implementation
+authors: Python core developers
+year: 2026
+venue: raw.githubusercontent.com/python/cpython/main/Python/assemble.c
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython/main/Python/assemble.c
+keywords: assemble_exception_table, assemble_emit_exception_table_entry, assemble_emit_exception_table_item, varint, CONTINUATION_BIT, write_except_byte, _PyExceptHandlerInfo
+cites:
+cited_by:
+content:
+  ## assemble_exception_table (verbatim)
+
+  static int
+  assemble_exception_table(struct assembler *a, instr_sequence *instrs)
+  {
+      int ioffset = 0;
+      _PyExceptHandlerInfo handler;
+      handler.h_label = -1;
+      handler.h_startdepth = -1;
+      handler.h_preserve_lasti = -1;
+      int start = -1;
+      for (int i = 0; i < instrs->s_used; i++) {
+          instruction *instr = &instrs->s_instrs[i];
+          if (instr->i_except_handler_info.h_label != handler.h_label) {
+              if (handler.h_label >= 0) {
+                  int handler_offset = instrs->s_instrs[handler.h_label].i_offset;
+                  RETURN_IF_ERROR(
+                      assemble_emit_exception_table_entry(a, start, ioffset,
+                                                          handler_offset,
+                                                          &handler));
+              }
+              start = ioffset;
+              handler = instr->i_except_handler_info;
+          }
+          ioffset += instr_size(instr);
+      }
+      if (handler.h_label >= 0) {
+          int handler_offset = instrs->s_instrs[handler.h_label].i_offset;
+          RETURN_IF_ERROR(assemble_emit_exception_table_entry(a, start, ioffset,
+                                                              handler_offset,
+                                                              &handler));
+      }
+      return SUCCESS;
+  }
+
+  Logic: Iterates through instructions detecting handler boundary changes.
+  When handler changes: emit previous region's exception table entry.
+  Entry covers [start, ioffset) with handler at handler_offset.
+
+  ## assemble_emit_exception_table_entry (verbatim)
+
+  static int
+  assemble_emit_exception_table_entry(struct assembler *a, int start, int end,
+                                      int handler_offset,
+                                      _PyExceptHandlerInfo *handler)
+  {
+      ...
+      int size = end - start;
+      assert(end > start);
+      int target = handler_offset;
+      int depth = handler->h_startdepth - 1;
+      if (handler->h_preserve_lasti > 0) {
+          depth -= 1;
+      }
+      assert(depth >= 0);
+      int depth_lasti = (depth<<1) | handler->h_preserve_lasti;
+      assemble_emit_exception_table_item(a, start, (1<<7));   // first byte: MSB set
+      assemble_emit_exception_table_item(a, size, 0);
+      assemble_emit_exception_table_item(a, target, 0);
+      assemble_emit_exception_table_item(a, depth_lasti, 0);
+      return SUCCESS;
+  }
+
+  CRITICAL NOTE: depth_lasti = (depth<<1) | handler->h_preserve_lasti
+  where:
+    depth = h_startdepth - 1 (minus another 1 if lasti preserved)
+    h_preserve_lasti maps to lasti bit in exception table entry
+
+  The first call passes (1<<7) = 0x80 = MSB for the start field.
+  Other fields pass 0 for msb (no start-of-entry marker on continuation fields).
+
+  ## assemble_emit_exception_table_item (verbatim)
+
+  #define CONTINUATION_BIT 64
+
+  static void
+  assemble_emit_exception_table_item(struct assembler *a, int value, int msb)
+  {
+      assert ((msb | 128) == 128);
+      assert(value >= 0 && value < (1 << 30));
+      if (value >= 1 << 24) {
+          write_except_byte(a, (value >> 24) | CONTINUATION_BIT | msb);
+          msb = 0;
+      }
+      if (value >= 1 << 18) {
+          write_except_byte(a, ((value >> 18)&0x3f) | CONTINUATION_BIT | msb);
+          msb = 0;
+      }
+      if (value >= 1 << 12) {
+          write_except_byte(a, ((value >> 12)&0x3f) | CONTINUATION_BIT | msb);
+          msb = 0;
+      }
+      if (value >= 1 << 6) {
+          write_except_byte(a, ((value >> 6)&0x3f) | CONTINUATION_BIT | msb);
+          msb = 0;
+      }
+      write_except_byte(a, (value&0x3f) | msb);
+  }
+
+  Byte format for each byte written:
+    bit 7 (0x80): MSB/start-of-entry marker — only set for FIRST byte of start field
+    bit 6 (0x40 = CONTINUATION_BIT): set if more bytes follow for this value
+    bits 5-0 (0x3f): 6 data bits
+
+  Max value per field: 2^30 (30 bits across up to 5 bytes of 6 data bits each)
+
+  ## Relationship between C encoding and Python _parse_varint decoding
+
+  C encoder (assemble_emit_exception_table_item):
+    - Groups value into 6-bit chunks from high to low
+    - Sets continuation bit (bit 6) on all but last byte
+    - First byte of "start" field gets MSB (bit 7) set
+
+  Python decoder (_parse_varint):
+    b = next(iterator)
+    val = b & 63      # strip both bit 6 and bit 7
+    while b & 64:     # continuation bit = bit 6
+        val <<= 6
+        b = next(iterator)
+        val |= b & 63
+    return val
+
+  The decoder ignores bit 7 (MSB) — it was the entry-start marker used for
+  entry boundary detection at the C level, but Python's _parse_exception_table
+  uses sequential parsing (reading exactly 4 varints per entry) rather than
+  marker-based parsing. So the MSB on the "start" field is effectively ignored
+  by the Python-level parser — it just gets stripped by `b & 63`.
+<<<END>>>
+
+SOURCE
+id: 17
+ts: 2026-05-28T00:17:00Z
+relevance: HIGH
+title: PEP 657 — Fine-Grained Error Locations (co_positions API)
+authors: Pablo Galindo Salgado, Batuhan Taskaya, et al.
+year: 2021
+venue: peps.python.org/pep-0657/
+quality: SPEC
+url: https://peps.python.org/pep-0657/
+keywords: co_positions, fine-grained error locations, column offsets, end_lineno, end_col_offset, PyCode_Addr2Location, co_linetable
+cites:
+cited_by:
+content:
+  ## co_positions() Python API (added 3.11)
+
+  code.co_positions()
+  Returns: iterator of (start_line, end_line, start_column, end_column) tuples
+  One tuple per instruction (including CACHE pseudo-instructions).
+  Values may be None if position information not available for that instruction.
+  Note from PEP: offsets > 255 treated as missing (return -1 from C API, None from Python API).
+
+  ## PyCode_Addr2Location (C API added 3.11)
+
+  int PyCode_Addr2Location(PyObject *co, int byte_offset,
+                            int *start_line, int *start_column,
+                            int *end_line, int *end_column)
+  Sets to 0 (not None) when information unavailable.
+  Returns: 1 on success, 0 on failure.
+
+  ## dis.Positions namedtuple (added 3.11)
+
+  Positions(lineno, end_lineno, col_offset, end_col_offset)
+  All fields int|None.
+  Populated from co_positions() iterator.
+  Available on Instruction.positions field.
+
+  ## Semantics
+
+  Fine-grained: gives precise source span for each bytecode instruction.
+  Useful for tools that need to highlight exact source text responsible for each op.
+  For pflow: can map each CFG node/edge to source span for diagnostics.
+
+  ## Storage
+
+  Stored in co_linetable (same field, but with extended format encoding position info).
+  co_linetable format extended in 3.11 to include column info (entry types 0-15).
+  Prior to 3.11: co_lnotab stored only line numbers, 2 bytes per entry.
+<<<END>>>
+
+
+SOURCE
+id: 18
+ts: 2026-05-28T00:18:00Z
+relevance: HIGH
+title: Python 3.12 opcode.py — numeric opcode values for key control-flow opcodes
+authors: Python core developers
+year: 2023
+venue: raw.githubusercontent.com/python/cpython/v3.12.0/Lib/opcode.py
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython/v3.12.0/Lib/opcode.py
+keywords: opcode numbers 3.12, RETURN_CONST, BEFORE_WITH, RERAISE, RAISE_VARARGS, JUMP_FORWARD, JUMP_BACKWARD, FOR_ITER, SEND, hasjrel, hasexc
+cites:
+cited_by:
+content:
+  ## Numeric opcode values in Python 3.12.0
+
+  Exception & control flow (numeric values):
+    PUSH_EXC_INFO              = 35
+    CHECK_EXC_MATCH            = 36
+    WITH_EXCEPT_START          = 49
+    BEFORE_WITH                = 53   ← exists in 3.12
+    POP_EXCEPT                 = 89
+    RERAISE                    = 119
+    RETURN_CONST               = 121  ← added in 3.12
+    JUMP_FORWARD               = 110  (jrel_op)
+    JUMP_BACKWARD              = 140  (jrel_op)
+    JUMP_BACKWARD_NO_INTERRUPT = 134  (jrel_op)
+    FOR_ITER                   = 93   (jrel_op)
+    SEND                       = 123  (jrel_op)
+    RAISE_VARARGS              = 130
+    EXTENDED_ARG               = 144
+
+  ## hasjrel in 3.12 (relative jumps — NOT yet deprecated)
+    FOR_ITER (93)
+    JUMP_FORWARD (110)
+    POP_JUMP_IF_FALSE (114)
+    POP_JUMP_IF_TRUE (115)
+    POP_JUMP_IF_NOT_NONE (128)
+    POP_JUMP_IF_NONE (129)
+    JUMP_BACKWARD_NO_INTERRUPT (134)
+    JUMP_BACKWARD (140)
+    SEND (123)
+
+  ## hasexc in 3.12 (pseudo-instructions: set exception handler)
+    SETUP_FINALLY (256)
+    SETUP_CLEANUP (257)
+    SETUP_WITH    (258)
+
+  ## hasarg in 3.12
+    All opcodes >= 90 (HAVE_ARGUMENT threshold) use their argument.
+
+  ## HAVE_ARGUMENT threshold
+    = 90 in 3.12
+    Real opcodes < 90: no argument (e.g., PUSH_EXC_INFO=35 has no oparg)
+    Real opcodes >= 90: have argument (e.g., JUMP_FORWARD=110 has delta)
+
+  ## BEFORE_WITH semantics in 3.12/3.13
+    BEFORE_WITH: sets up with-statement.
+    Loads __exit__ method and pushes to stack position, then calls __enter__.
+    oparg = 1: push lasti (preserve instruction offset for exception handler)
+    Used by WITH_EXCEPT_START in the exception handler path.
+    The with-body is protected by an exception table entry.
+    Exception handler entry: target = PUSH_EXC_INFO instruction.
+    Handler body: PUSH_EXC_INFO, WITH_EXCEPT_START, POP_JUMP_IF_TRUE, RERAISE.
+
+  ## WITH_EXCEPT_START semantics (all versions 3.12-3.14)
+    Calls __exit__(exc_type, exc_val, exc_tb).
+    __exit__ is at stack position 4 (in 3.11+, was 7 in 3.10).
+    Result used by POP_JUMP_IF_TRUE: if truthy, exception suppressed (jump to cleanup).
+    If falsy, RERAISE re-raises the exception.
+    NOT a basic-block terminator.
+<<<END>>>
+
+SOURCE
+id: 19
+ts: 2026-05-28T00:19:00Z
+relevance: HIGH
+title: BEFORE_WITH removal in 3.14 and LOAD_SPECIAL replacement — with-statement bytecode patterns
+authors: Python core developers
+year: 2025
+venue: github.com + docs.python.org
+quality: DOCS
+url: https://docs.python.org/3/whatsnew/3.14.html
+keywords: BEFORE_WITH removed 3.14, LOAD_SPECIAL, with statement 3.14 bytecode, WITH_EXCEPT_START still present
+cites:
+cited_by:
+content:
+  ## BEFORE_WITH and BEFORE_ASYNC_WITH removal in 3.14
+
+  BEFORE_WITH and BEFORE_ASYNC_WITH removed in Python 3.14.
+  Replaced by LOAD_SPECIAL instruction.
+
+  In 3.12/3.13 pattern for `with ctx as x:`:
+    BEFORE_WITH        (loads __exit__, calls __enter__, pushes result)
+    <store result to x>
+    <body>
+    ... (exception table entry covers body → exception handler)
+    Exception handler: PUSH_EXC_INFO → WITH_EXCEPT_START → POP_JUMP_IF_TRUE → RERAISE
+
+  In 3.14 pattern for `with ctx as x:`:
+    LOAD_SPECIAL(n)   (loads __enter__ special method; n = enum for __enter__)
+    CALL              (calls __enter__, pushes result)
+    <store result to x>
+    <body>
+    ... (exception table entry covers body → exception handler)
+    Exception handler path:
+      LOAD_SPECIAL(m)  (loads __exit__ method; m = enum for __exit__)
+      WITH_EXCEPT_START (still present in 3.14 — calls __exit__ with exc info)
+      POP_JUMP_IF_TRUE  (suppress or reraise)
+      RERAISE
+
+  ## WITH_EXCEPT_START still present in 3.14
+  WITH_EXCEPT_START is NOT removed in 3.14.
+  It remains as the instruction that calls __exit__ in the exception handler path.
+
+  ## LOAD_SPECIAL oparg encoding
+  oparg encodes which special method to load using a dedicated enum.
+  Specific enum values not documented in public docs as of this research.
+  Applies to: __enter__, __exit__, __aenter__, __aexit__, and potentially others.
+
+  ## pflow CFG implications
+
+  For version-gated with-statement handling:
+
+  3.12/3.13: BEFORE_WITH instruction in bytecode stream.
+    - is_jump_target=False (not a block leader itself)
+    - Exception table entry covers bytecode from after BEFORE_WITH through end of body
+    - Exception handler block starts with PUSH_EXC_INFO (block leader via exception table target)
+
+  3.14: No BEFORE_WITH. LOAD_SPECIAL instead.
+    - Exception table entry still covers body
+    - Exception handler block still starts with PUSH_EXC_INFO (or equivalent)
+    - WITH_EXCEPT_START still in exception handler path
+
+  ## Identifying with-statement exception edges
+  In all versions 3.12-3.14:
+    Exception table entry with target pointing to a block starting with PUSH_EXC_INFO,
+    followed by WITH_EXCEPT_START → indicates with-statement exception cleanup.
+    Distinguished from try/except by: WITH_EXCEPT_START (not CHECK_EXC_MATCH).
+<<<END>>>
+
+
+SOURCE
+id: 20
+ts: 2026-05-28T00:20:00Z
+relevance: HIGH
+title: Python 3.14 dis.rst — complete instruction reference for new 3.14 opcodes
+authors: Python core developers
+year: 2025
+venue: raw.githubusercontent.com/python/cpython/main/Doc/library/dis.rst
+quality: DOCS
+url: https://raw.githubusercontent.com/python/cpython/main/Doc/library/dis.rst
+keywords: NOT_TAKEN, POP_ITER, LOAD_SPECIAL, BUILD_TEMPLATE, BUILD_INTERPOLATION, WITH_EXCEPT_START, PUSH_EXC_INFO, CHECK_EXC_MATCH, RERAISE, RAISE_VARARGS, JUMP_FORWARD, JUMP_BACKWARD, FOR_ITER, SEND
+cites:
+cited_by:
+content:
+  ## New opcodes in 3.14 (from dis.rst main branch)
+
+  NOT_TAKEN
+    No-op code. Used by interpreter to record BRANCH_LEFT and BRANCH_RIGHT events
+    for sys.monitoring.
+    Added 3.14. NOT a basic-block terminator.
+    Implementation: macro(NOT_TAKEN) = NOP (alias to NOP)
+
+  POP_ITER
+    Removes iterator from top of stack.
+    Stack effect: pops iter, pops index_or_null (two items).
+    Added 3.14.
+    Implementation:
+      inst(POP_ITER, (iter, index_or_null -- )) {
+          (void)index_or_null;
+          DEAD(index_or_null);
+          PyStackRef_CLOSE(iter);
+      }
+
+  LOAD_SPECIAL
+    Performs special method lookup on STACK[-1].
+    If type(STACK[-1]).__xxx__ is a method:
+      leaves type(STACK[-1]).__xxx__; STACK[-1] on the stack
+    If type(STACK[-1]).__xxx__ is not a method:
+      leaves STACK[-1].__xxx__; NULL on the stack
+    oparg: encodes which special method using a dedicated enum.
+    Added 3.14. Replaces BEFORE_WITH (for with-statements).
+    dis output: "LOAD_SPECIAL  1" (numeric, no attribute name yet — see gh-120780)
+
+  BUILD_TEMPLATE
+    Constructs a new Template instance from:
+      interpolations = STACK.pop()
+      strings = STACK.pop()
+      STACK.append(_build_template(strings, interpolations))
+    Added 3.14.
+
+  BUILD_INTERPOLATION(format)
+    Constructs a new Interpolation instance from value and source expression.
+    oparg encodes: conversion = format >> 2, has_format_spec = format & 1
+    Added 3.14.
+
+  ## RETURN_VALUE (confirmed present in 3.14)
+    Returns with STACK[-1] to caller. No change.
+    Terminates basic block.
+
+  ## RETURN_CONST (confirmed removed in 3.14)
+    Was present in 3.12 and 3.13: return co_consts[consti].
+    NOT present in 3.14 dis.rst. Confirmed removed.
+
+  ## BEFORE_WITH (confirmed removed in 3.14)
+    NOT present in 3.14 dis.rst. Confirmed removed.
+    Replaced by LOAD_SPECIAL.
+
+  ## bytecodes.c confirms (from fetch of main branch)
+    RETURN_VALUE: macro(RETURN_VALUE) = _MAKE_HEAP_SAFE + _RETURN_VALUE
+    NOT_TAKEN: macro(NOT_TAKEN) = NOP
+    POP_ITER: inst(POP_ITER, (iter, index_or_null -- ))
+    RETURN_CONST: NOT FOUND in main branch bytecodes.c (confirms removal)
+    BEFORE_WITH: NOT FOUND in main branch bytecodes.c (confirms removal)
+    LOAD_SPECIAL: NOT in the excerpt fetched (likely in another section of bytecodes.c)
+
+  ## LOAD_SPECIAL oparg values (from gh-120507 and gh-120780)
+    Proposed bytecode pattern for `with ctx as x:`:
+      COPY 1
+      LOAD_SPECIAL __enter__ + NULL|self
+      SWAP 3
+      LOAD_SPECIAL __exit__
+      SWAP 3
+      CALL 0
+    oparg values: numeric, not yet documented. 
+    dis displays "LOAD_SPECIAL 1" without attribute name (tracked in gh-120780).
+    From context: 0 = one value (__enter__?), 1 = another (__exit__?).
+    PR #120640 implements this change.
+
+  ## WITH_EXCEPT_START (confirmed present in 3.14)
+    Calls function at stack position 4 with (type, val, tb).
+    Used to call __exit__ in exception handler for with-statement.
+    Still present and unchanged semantically from 3.11 form.
+    NOT a terminator.
+
+  ## Key exception-related instructions (unchanged across 3.12-3.14)
+    PUSH_EXC_INFO: pops, pushes current exception, pushes original. Added 3.11.
+    POP_EXCEPT: pops exception state restoration value. Changed 3.11.
+    CHECK_EXC_MATCH: tests STACK[-2] isinstance STACK[-1]. Added 3.11.
+    RERAISE(lasti): re-raises TOS exception; if lasti non-zero, pops+sets f_lasti.
+    RAISE_VARARGS(argc): 0=reraise, 1=raise, 2=raise from.
+<<<END>>>
+
+SOURCE
+id: 21
+ts: 2026-05-28T00:21:00Z
+relevance: HIGH
+title: LOAD_SPECIAL implementation — gh-120507 (Lower BEFORE_WITH/BEFORE_ASYNC_WITH)
+authors: Mark Shannon (primary author)
+year: 2024
+venue: github.com/python/cpython/issues/120507 + github.com/python/cpython/pull/120640
+quality: CODE
+url: https://github.com/python/cpython/issues/120507
+keywords: LOAD_SPECIAL, BEFORE_WITH removal, BEFORE_ASYNC_WITH removal, with statement 3.14, oparg values, __enter__ __exit__ __aenter__ __aexit__
+cites:
+cited_by:
+content:
+  ## PR #120640 — "Lower the BEFORE_WITH and BEFORE_ASYNC_WITH instructions"
+
+  Author: Mark Shannon
+  Merged into 3.14.
+
+  ## Proposed bytecode pattern for `with ctx as x:` (from issue description)
+
+  COPY 1
+  LOAD_SPECIAL __enter__ + NULL|self
+  SWAP 3
+  LOAD_SPECIAL __exit__
+  SWAP 3
+  CALL 0
+
+  ## LOAD_SPECIAL description from issue
+
+  "A new LOAD_SPECIAL instruction was introduced to handle loading dunder methods,
+   replacing the previous bulky instructions that didn't optimize effectively in tier 2."
+
+  ## LOAD_SPECIAL oparg numeric values
+
+  dis shows numeric oparg only: "LOAD_SPECIAL 1" (no attribute name).
+  Issue gh-120780 requests adding attribute name to dis output.
+  Follow-up PR #120781 addresses documentation.
+  Exact mapping of oparg integer → method name NOT confirmed from available sources.
+  From issue context: 0 and 1 are used for __enter__/__exit__ respectively (order uncertain).
+
+  ## Implication for pflow CFG construction in 3.14
+
+  For with-statement detection in 3.14 bytecode:
+    Cannot search for BEFORE_WITH (removed).
+    Must detect LOAD_SPECIAL + CALL sequence at start of with-body setup.
+    Exception handler still uses WITH_EXCEPT_START.
+    Exception table entry still covers the with-body.
+    Block leader for handler: still PUSH_EXC_INFO.
+
+  ## async-with changes
+    BEFORE_ASYNC_WITH also removed in 3.14.
+    LOAD_SPECIAL(n) with appropriate enum values for __aenter__/__aexit__.
+    WITH_EXCEPT_START equivalent for async also changed accordingly.
+<<<END>>>
+
+
+SOURCE
+id: 22
+ts: 2026-05-28T00:22:00Z
+relevance: HIGH
+title: PR #120640 — Lower BEFORE_WITH/BEFORE_ASYNC_WITH to LOAD_SPECIAL — exact oparg values
+authors: Mark Shannon
+year: 2024
+venue: github.com/python/cpython/pull/120640
+quality: CODE
+url: https://github.com/python/cpython/pull/120640
+keywords: LOAD_SPECIAL oparg, __enter__=1, __exit__=0, BEFORE_WITH removed, with-statement pattern 3.14
+cites:
+cited_by:
+content:
+  ## LOAD_SPECIAL oparg values (from PR #120640)
+
+  CONFIRMED from PR description:
+    LOAD_SPECIAL oparg 0 → loads __exit__ (or __aexit__ for async)
+    LOAD_SPECIAL oparg 1 → loads __enter__ (or __aenter__ for async)
+
+  ## Exact bytecode pattern for `with ctx as x:` in 3.14
+
+  COPY                     1      (duplicate ctx reference)
+  LOAD_SPECIAL             1      (load __enter__ from ctx)
+  SWAP                     2
+  SWAP                     3
+  LOAD_SPECIAL             0      (load __exit__ from ctx)
+  CALL                     0      (call __enter__)
+  <store result to x>
+  <body>
+  ... (exception table entry covers body)
+  Exception handler:
+    PUSH_EXC_INFO
+    WITH_EXCEPT_START  (calls __exit__ with exc_info)
+    POP_JUMP_IF_TRUE   (if __exit__ returns truthy: suppress exception)
+    RERAISE            (otherwise: propagate exception)
+
+  ## Performance note from PR
+
+  "Negligible performance impact" — the instruction sequence is longer but
+  more amenable to tier-2 JIT optimization.
+  Exposes _PyObject_LookupSpecialMethod for JIT access.
+
+  ## Stack effect of LOAD_SPECIAL
+
+  If type(obj).__xxx__ is a method:
+    Pushes: (method, obj)  ← obj stays on stack, method added above
+  If type(obj).__xxx__ is not a method:
+    Pushes: (bound_method_or_attr, NULL)  ← NULL placeholder for self
+
+  This mirrors the LOAD_ATTR(method-call) behavior with low bit set.
+  Result: stack has two items where CALL expects (callable + self/NULL).
+<<<END>>>
+
+
+SOURCE
+id: 23
+ts: 2026-05-28T00:23:00Z
+relevance: HIGH
+title: CPython compiler.md — compilation pipeline stages
+authors: Python core developers
+year: 2026
+venue: raw.githubusercontent.com/python/cpython/main/InternalDocs/compiler.md
+quality: DOCS
+url: https://raw.githubusercontent.com/python/cpython/main/InternalDocs/compiler.md
+keywords: compilation pipeline, CFG construction, pseudo-instructions, exception table assembly, _PyCfg_FromInstructionSequence, _PyAssemble_MakeCodeObject
+cites:
+cited_by:
+content:
+  ## Compilation pipeline stages (CPython 3.12+)
+
+  Stage 1: Tokenization (lexer/tokenizer)
+  Stage 2: Parsing into AST using PEG parser
+  Stage 3: AST transformation to instruction sequence via compiler_codegen()
+    - codegen stage emits pseudo-instructions (SETUP_FINALLY, SETUP_CLEANUP, SETUP_WITH, POP_BLOCK)
+    - Pseudo-instructions never appear in final bytecode
+    - "Similar to bytecode, but in some cases more abstract, resolved later"
+  Stage 4: CFG construction and optimization
+    - _PyCfg_FromInstructionSequence() — converts linear instruction seq to CFG
+    - _PyCfg_OptimizeCodeUnit() — optimizes the CFG
+  Stage 5: Bytecode emission and code object creation
+    - _PyAssemble_MakeCodeObject() — emits bytecode + builds exception table
+
+  ## Basic block definition (from compiler.md)
+
+  "A sequence of bytecode instructions that always execute sequentially"
+  "A single entry point at the beginning and a single exit point at the end"
+  "If bytecode instruction a needs to jump to instruction b, then a must occur at
+   end of its basic block, and b must occur at start of its basic block."
+
+  ## CFG notes
+
+  No detailed algorithm given in compiler.md for identifying block leaders.
+  _PyCfg_FromInstructionSequence() does the heavy lifting internally.
+  Block leaders come from: jump targets + exception handler targets.
+
+  ## compile.c / codegen.c split (3.12+)
+
+  compile.c: compiler state management, frame blocks
+  codegen.c: actual code generation functions (compiler_with, compiler_try_finally, etc.)
+  Split motivated by maintainability; preserves commit history via separate file creation.
+  Both in Python/ directory.
+  (Issue gh-121404 documents the split)
+<<<END>>>
+
+SOURCE
+id: 24
+ts: 2026-05-28T00:24:00Z
+relevance: HIGH
+title: Summary — try/finally bytecode pattern in 3.11-3.14 (finally duplication confirmed)
+authors: Various CPython sources
+year: 2025
+venue: multiple CPython sources (compiler.md, python-dev list, bytecode library docs)
+quality: DOCS
+url: https://github.com/python/cpython
+keywords: try/finally duplication, finally body duplicated, exception path copy, normal path copy, RERAISE, PUSH_EXC_INFO, POP_EXCEPT
+cites:
+cited_by:
+content:
+  ## try/finally bytecode pattern in 3.11-3.14
+
+  CONFIRMED from multiple sources: CPython DUPLICATES the finally body.
+
+  Pattern for:
+    try:
+        <body>
+    finally:
+        <finally_body>
+
+  Compiled to (simplified, 3.11+):
+    Offset 0:
+      <body>                         ← protected by exception table entry
+
+    Offset N (normal exit):
+      <finally_body copy 1>          ← executes when body exits normally
+      JUMP <after>
+
+    Offset M (exception handler):    ← exception table entry target
+      PUSH_EXC_INFO                  ← block leader (is_jump_target=True via exception table)
+      <finally_body copy 2>          ← executes when exception raised in body
+      RERAISE 1                      ← re-raises with saved f_lasti
+
+  Exception table entry:
+    start=0, end=N, target=M, depth=<stack_depth>, lasti=True
+
+  ## try/except pattern in 3.11-3.14
+
+  Pattern for:
+    try:
+        <body>
+    except ExcType as e:
+        <handler>
+
+  Compiled to (simplified, 3.11+):
+    Offset 0:
+      <body>                         ← protected by exception table entry
+
+    Offset N:                        ← fallthrough after body (no exception)
+      JUMP <after>
+
+    Offset M:                        ← exception handler (exception table target)
+      PUSH_EXC_INFO
+      LOAD <ExcType>
+      CHECK_EXC_MATCH
+      POP_JUMP_IF_FALSE <L_no_match>
+      <handler>
+      POP_EXCEPT
+      JUMP <after>
+    L_no_match:
+      RERAISE 0                      ← no handler matched; propagate
+
+  Exception table entry:
+    start=0, end=N, target=M, depth=<stack_depth>, lasti=False (for except)
+    or lasti=True (for finally -- to preserve f_lasti for RERAISE 1)
+
+  ## try/except/finally pattern
+
+  try:
+    <body>
+  except ExcType:
+    <handler>
+  finally:
+    <finally_body>
+
+  Compiled as NESTED try blocks:
+    Inner try: body with except handler
+    Outer try: inner-try with finally
+  Results in multiple exception table entries (one per try block level).
+
+  ## with-statement pattern in 3.12/3.13
+
+  with ctx as x:
+    <body>
+
+  BEFORE_WITH              ← loads __exit__, calls __enter__, pushes result
+  STORE <x>
+  <body>                   ← protected by exception table entry (lasti=True)
+
+  Exception handler:       ← exception table target
+    PUSH_EXC_INFO
+    WITH_EXCEPT_START      ← calls __exit__(exc_type, exc_val, exc_tb)
+    POP_JUMP_IF_TRUE L     ← if __exit__ returns truthy: suppress exception
+    RERAISE 1
+  L:
+    POP_TOP                ← pop __exit__ result
+    POP_EXCEPT
+    (continue after with)
+
+  ## with-statement pattern in 3.14
+
+  (LOAD_SPECIAL-based; see record 22)
+  LOAD_SPECIAL 1           ← loads __enter__
+  CALL + STORE <x>
+  LOAD_SPECIAL 0           ← loads __exit__ (prep for handler use)
+  <body>                   ← protected by exception table entry
+
+  Exception handler: same structure (PUSH_EXC_INFO + WITH_EXCEPT_START + ...)
+
+  ## Key CFG implications
+
+  For pflow CFG construction:
+  1. Exception table entries create edges from ALL instructions in [start, end) to target.
+  2. Target instruction is ALWAYS a block leader (first instruction of handler block).
+  3. PUSH_EXC_INFO at handler entry: block leader by virtue of being exception table target.
+  4. RERAISE terminates a block (unconditionally).
+  5. POP_JUMP_IF_TRUE in with-handler: creates two edges (suppress vs. reraise path).
+  6. Finally blocks: appear TWICE in bytecode. Both copies are normal basic blocks.
+     The second copy (exception path) has block leader = exception table target.
+  7. Nested try blocks: nested exception table entries; inner handler covered by outer entry.
+<<<END>>>
+
+
+SOURCE
+id: 25
+ts: 2026-05-28T00:25:00Z
+relevance: HIGH
+title: Python 3.12 dis.py source — Instruction namedtuple (9 fields), findlabels, findlinestarts (verbatim)
+authors: Python core developers
+year: 2023
+venue: raw.githubusercontent.com/python/cpython/v3.12.0/Lib/dis.py
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython/v3.12.0/Lib/dis.py
+keywords: Instruction 3.12 fields, starts_line int OR None, no jump_target, no line_number, findlabels 3.12, findlinestarts 3.12
+cites:
+cited_by:
+content:
+  ## Python 3.12 Instruction namedtuple (verbatim)
+
+  _Instruction = collections.namedtuple(
+      "_Instruction",
+      [
+          'opname',
+          'opcode',
+          'arg',
+          'argval',
+          'argrepr',
+          'offset',
+          'starts_line',
+          'is_jump_target',
+          'positions'
+      ],
+      defaults=[None]
+  )
+
+  FIELDS IN 3.12 (9 total, NOT class-based):
+    opname, opcode, arg, argval, argrepr, offset,
+    starts_line (int|None — the line number if this starts a line, else None),
+    is_jump_target (bool),
+    positions (dis.Positions|None, added 3.11)
+
+  CRITICAL DIFFERENCES from 3.13+:
+    - starts_line: int|None in 3.12 (line number value OR None)
+    - is_jump_target: stored field in namedtuple (not property)
+    - NO start_offset, NO cache_offset, NO end_offset, NO line_number
+    - NO jump_target, NO cache_info, NO baseopname, NO baseopcode
+    - NO oparg (use arg instead)
+    - NO label field
+
+  ## findlabels in Python 3.12 (verbatim)
+
+  def findlabels(code):
+      labels = []
+      for offset, op, arg in _unpack_opargs(code):
+          if arg is not None:
+              deop = _deoptop(op)
+              caches = _inline_cache_entries[deop]
+              if deop in hasjrel:
+                  if _is_backward_jump(deop):
+                      arg = -arg
+                  label = offset + 2 + arg*2
+                  label += 2 * caches
+              elif deop in hasjabs:
+                  label = arg*2
+              else:
+                  continue
+              if label not in labels:
+                  labels.append(label)
+      return labels
+
+  Note: In 3.12, uses _unpack_opargs(code) yielding (offset, op, arg)
+  (vs 3.13+ which yields (offset, start_offset, op, arg))
+  Note: deop = _deoptop(op) deoptimizes specialized opcodes to base opcode.
+  Note: _inline_cache_entries (not _get_cache_size) in 3.12.
+
+  ## findlinestarts in Python 3.12 (verbatim)
+
+  def findlinestarts(code):
+      lastline = None
+      for start, end, line in code.co_lines():
+          if line is not None and line != lastline:
+              lastline = line
+              yield start, line
+      return
+
+  Note: Slightly different from 3.13+ (which uses lastline=False).
+  Key: yields only when line changes AND is not None (skips instructions without line).
+
+  ## _parse_exception_table in Python 3.12 (verbatim — same implementation as 3.13)
+
+  def _parse_exception_table(code):
+      iterator = iter(code.co_exceptiontable)
+      entries = []
+      try:
+          while True:
+              start = _parse_varint(iterator)*2
+              length = _parse_varint(iterator)*2
+              end = start + length
+              target = _parse_varint(iterator)*2
+              dl = _parse_varint(iterator)
+              depth = dl >> 1
+              lasti = bool(dl&1)
+              entries.append(_ExceptionTableEntry(start, end, target, depth, lasti))
+      except StopIteration:
+          return entries
+
+  Implementation is IDENTICAL to 3.13+ _parse_exception_table.
+
+  ## _parse_varint in Python 3.12 (verbatim — same as 3.13)
+
+  def _parse_varint(iterator):
+      b = next(iterator)
+      val = b & 63
+      while b&64:
+          val <<= 6
+          b = next(iterator)
+          val |= b&63
+      return val
+
+  Same implementation as 3.13+.
+<<<END>>>
+
+SOURCE
+id: 26
+ts: 2026-05-28T00:26:00Z
+relevance: HIGH
+title: Python 3.13 dis.py source — Instruction class (12 fields + properties), _make_labels_map
+authors: Python core developers
+year: 2024
+venue: raw.githubusercontent.com/python/cpython/v3.13.0/Lib/dis.py
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython/v3.13.0/Lib/dis.py
+keywords: Instruction 3.13 fields, label field, _make_labels_map, starts_line bool, line_number, jump_target property, cache_info
+cites:
+cited_by:
+content:
+  ## Python 3.13 Instruction namedtuple (verbatim)
+
+  _Instruction = collections.namedtuple(
+      "_Instruction",
+      [
+          'opname', 'opcode', 'arg', 'argval', 'argrepr',
+          'offset', 'start_offset', 'starts_line', 'line_number',
+          'label', 'positions', 'cache_info',
+      ],
+      defaults=[None, None, None]
+  )
+
+  FIELDS IN 3.13 (12 total, class-based with properties):
+    opname, opcode, arg, argval, argrepr
+    offset          — byte offset of this instruction
+    start_offset    — byte offset including EXTENDED_ARG prefixes [NEW in 3.13]
+    starts_line     — bool: True if opcode starts a new source line [CHANGED from int|None]
+    line_number     — int|None: current source line number [NEW in 3.13]
+    label           — logical label string for jump display (e.g. "L1") [NEW field]
+    positions       — dis.Positions [was in 3.12 too, added 3.11]
+    cache_info      — list of (name, size, data) tuples [NEW in 3.13]
+
+  Properties (computed, not stored in namedtuple):
+    oparg           — alias for arg
+    baseopcode      — _deoptop(self.opcode)
+    baseopname      — opname[self.baseopcode]
+    cache_offset    — self.offset + 2
+    end_offset      — self.cache_offset + _get_cache_size(...)*2
+    jump_target     — _get_jump_target(self.opcode, self.arg, self.offset)
+    is_jump_target  — self.label is not None  [now a PROPERTY, not stored field!]
+
+  ## _make_labels_map (3.13+ specific)
+
+  Creates mapping from byte offset → logical label.
+  Called with (original_code, exception_entries) — includes BOTH:
+    - Jump targets from _get_jump_target
+    - Exception handler targets from exception_entries
+
+  This is why exception handler block leaders also get labels and
+  is_jump_target=True: they appear in the labels_map.
+
+  ## Key behavior change for is_jump_target in 3.13
+
+  In 3.12: is_jump_target stored as field in namedtuple; computed from findlabels().
+  In 3.13+: is_jump_target is a PROPERTY: return self.label is not None
+            Labels include both jump targets AND exception handler targets.
+  Result: In 3.13+, instructions targeted by exception table ALSO have is_jump_target=True.
+  In 3.12: is_jump_target covers ONLY bytecode jump targets (not exception table targets).
+
+  PFLOW IMPLICATION:
+    In 3.12, to find ALL block leaders:
+      1. instr.is_jump_target = True (jump targets)
+      2. Also check exception_entries targets (not covered by is_jump_target in 3.12)
+    In 3.13+:
+      instr.is_jump_target = True covers BOTH jump targets AND exception table targets.
+      (Because _make_labels_map includes exception_entries targets in label computation.)
+      (Or equivalently: instr.label is not None)
+<<<END>>>
+
+
+SOURCE
+id: 27
+ts: 2026-05-28T00:27:00Z
+relevance: HIGH
+title: LOAD_FAST_BORROW opcode — Python 3.14 reference-counting optimization
+authors: Python core developers
+year: 2025
+venue: github.com/python/cpython/issues/130704 + rushter.com/blog/python-refcount/
+quality: DOCS
+url: https://github.com/python/cpython/issues/130704
+keywords: LOAD_FAST_BORROW, borrowed reference, reference counting, opcode 3.14, LOAD_FAST_BORROW_LOAD_FAST_BORROW
+cites:
+cited_by:
+content:
+  ## LOAD_FAST_BORROW (Python 3.14)
+
+  New opcode added in 3.14.
+  Loads a local variable WITHOUT incrementing its reference count.
+  Uses a "borrowed reference" that is tagged to avoid refcount operations.
+  Safe when the reference in the frame outlives the reference loaded onto the stack.
+
+  LOAD_FAST vs LOAD_FAST_BORROW:
+    LOAD_FAST: load local, increment refcount (INCREF)
+    LOAD_FAST_BORROW: load local, tag as borrowed (no INCREF; no DECREF when consumed)
+  
+  Borrowed refs loaded onto operand stack live until end of consuming instruction.
+  Any borrowed ref that would escape to heap (frame object, generator) → converted to strong ref.
+  
+  Performance: "Eliminating 90% of refcounts in LOAD_FAST = 2-3% speedup in interpreter."
+  NOT a basic-block terminator.
+
+  LOAD_FAST_BORROW_LOAD_FAST_BORROW — optimized variant loading two locals in one op.
+  NOT a basic-block terminator.
+
+  ## RESUME opcode semantics (3.12-3.14)
+
+  RESUME is the first instruction in every function/generator/coroutine.
+  NOT a basic-block terminator; it's the entry point but doesn't jump.
+
+  oparg interpretation:
+    3.12:
+      oparg bits 1-0 (context):
+        0 = start of module/class/function
+        1 = after yield
+        2 = after yield from
+        3 = after await
+    3.13 CHANGE:
+      "The oparg value changed to include information about except-depth"
+      oparg bits 1-0: same context bits as 3.12
+      oparg bit 2: 1 if RESUME is at except-depth 1, 0 otherwise
+      (Used to optimize closing of generators)
+
+  ## bytecode library version changes (0.15-0.17)
+
+  0.15.0 (Python 3.12 support):
+    LOAD_ATTR changed: arg = tuple[bool, str] (low bit = is_method)
+    LOAD_SUPER_ATTR: arg = tuple[bool, bool, str]
+    POP_JUMP_IF_*: now undirected (no forward/backward distinction at library level)
+    YIELD_VALUE: now requires arg
+
+  0.16.0 (Python 3.13 support):
+    Comparison ops: new enum variants (LT_CAST, LE_CAST, etc.)
+    LOAD_FAST: now accesses free and cell vars
+
+  0.17.0 (Python 3.14 support):
+    NEW: BUILD_TEMPLATE, BUILD_INTERPOLATION, LOAD_SMALL_INT
+         LOAD_FAST_BORROW, LOAD_FAST_BORROW_LOAD_FAST_BORROW
+         LOAD_COMMON_CONSTANT, LOAD_SPECIAL
+    LOAD_SPECIAL: arg = SpecialMethod enum (dedicated enum for oparg values)
+    BINARY_OP: now uses enum supporting subscript operations
+    CONVERT_VALUE: uses FormatValue enum
+    CFG bugfix: ControlFlowGraph.split_block() now sets next_block correctly
+<<<END>>>
+
+SOURCE
+id: 28
+ts: 2026-05-28T00:28:00Z
+relevance: HIGH
+title: Python 3.12 dis.findlinestarts vs 3.13 — behavioral difference for None lines
+authors: Python core developers
+year: 2023-2024
+venue: raw.githubusercontent.com/python/cpython (multiple versions)
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython
+keywords: findlinestarts difference, co_lines None, starts_line None vs False, line tracking across versions
+cites:
+cited_by:
+content:
+  ## findlinestarts behavioral difference across versions
+
+  Python 3.12 (from source):
+    def findlinestarts(code):
+        lastline = None
+        for start, end, line in code.co_lines():
+            if line is not None and line != lastline:
+                lastline = line
+                yield start, line
+        return
+    Skips None lines (no yield when co_lines() returns None for a range).
+
+  Python 3.13+ (from source):
+    def findlinestarts(code):
+        lastline = False
+        for start, end, line in code.co_lines():
+            if line is not lastline:
+                lastline = line
+                yield start, line
+        return
+    Yields even when line is None (but only when it changes — first None range yields None).
+    Uses `lastline = False` (sentinel) so first iteration always yields.
+
+  ## Impact on line tracking for CFG construction
+
+  In 3.12: To track current line of an instruction:
+    linestarts = dict(findlinestarts(co))  # maps offset → line number (no None entries)
+    Iterate instructions; track last seen line from linestarts.
+    instr.starts_line != None → new line.
+    instr.starts_line value = the line number.
+
+  In 3.13+: To track current line:
+    instr.starts_line == True → new line starting at this instruction
+    instr.line_number → the current line number (int or None)
+    Both always populated.
+
+  ## co_lines() semantics (identical across 3.12-3.14)
+
+  code.co_lines() → iterator of (start, end, line)
+    start: byte offset (inclusive)
+    end: byte offset (exclusive)
+    line: int line number OR None
+  Covers entire bytecode span [0, len(bytecode)).
+  Consecutive, non-decreasing ranges.
+  Line=None: instructions without source association (e.g., RESUME, PUSH_EXC_INFO).
+
+  ## Instruction.positions for None-position instructions
+
+  For instructions without source location (e.g., RESUME at function start,
+  PUSH_EXC_INFO at exception handler entry):
+    instr.positions may be a Positions object with all-None fields:
+      Positions(lineno=None, end_lineno=None, col_offset=None, end_col_offset=None)
+    or positions itself may be None if co_positions iterator was exhausted.
+
+  ## co_positions() indexing note
+
+  list(code.co_positions())[i] = position of i-th instruction (including CACHE entries).
+  To get position of instruction at byte offset O:
+    instruction_index = O // 2  (each instruction = 2 bytes)
+    But must account for CACHE entries!
+    positions[O//2] includes CACHE entries in the count.
+    Use co.co_positions() and co.co_lines() together, not raw offset division.
+  
+  Correct approach: iterate dis.get_instructions() which handles cache skipping.
+  Each yielded Instruction has .positions already set correctly.
+  
+  Alternative: iterate _get_instructions_bytes which calls next(co_positions, ())
+    for each cache entry to skip, then assigns positions to the instruction.
+<<<END>>>
+
+
+SOURCE
+id: 29
+ts: 2026-05-28T00:29:00Z
+relevance: HIGH
+title: Finally block duplication in CPython — history and current status
+authors: Mark Shannon, Guido van Rossum, Serhiy Storchaka (issue 33387), CPython developers
+year: 2018-2025
+venue: bugs.python.org/issue33387
+quality: DOCS
+url: https://bugs.python.org/issue33387
+keywords: finally block duplication, code duplication, try-finally, exception path copy, normal path copy, Python 3.9+
+cites:
+cited_by:
+content:
+  ## Finally block code duplication — CONFIRMED in CPython
+
+  The solution in bpo-33387 (merged Nov 2019, landed in Python 3.9) EXPLICITLY chose
+  code duplication over complex control flow opcodes.
+
+  Pattern from issue:
+    SETUP_FINALLY except
+    try-body
+    POP_BLOCK
+    finally-body       ← COPY 1 (normal path)
+    JUMP exit
+    except:
+    finally-body       ← COPY 2 (exception path)
+    exit:
+
+  Quote: "generate separate code for normal and exceptional paths by implementing
+  finally blocks by code duplication."
+
+  This design decision was intentional: simpler opcodes, larger code size.
+
+  ## Status in 3.11-3.14
+
+  The duplication pattern PERSISTS in 3.11-3.14.
+  SETUP_FINALLY was removed from final bytecode (became pseudo-instruction in 3.11).
+  The exception table in co_exceptiontable maps the try-body → exception-path-copy.
+  Normal path copy: executed via fallthrough after try-body exits normally.
+  Exception path copy: jumped to via exception table lookup.
+
+  EVIDENCE: "CPython duplicates the code for a finally clause" (python-dev mailing list).
+  EVIDENCE: bytecode library docs mention "stack size computed before duplication"
+            implying duplication still occurs.
+
+  ## Layout optimization (3.12+)
+
+  Issue gh-93356: "Lay out exception handling code at end of code unit"
+  Exception handler blocks (cold blocks) moved to end of bytecode.
+  The finally-exception-copy appears after the normal-exit code.
+  This is a layout optimization, not removal of duplication.
+
+  ## Impact on pflow CFG construction
+
+  When building CFG from bytecode:
+    1. Two copies of finally body = two separate sequences of basic blocks.
+    2. The exception-path copy is a basic block starting at the exception table target.
+    3. Exception table target → PUSH_EXC_INFO → <finally copy 2> → RERAISE.
+    4. Normal path: <finally copy 1> → JUMP after.
+    5. Both copies have distinct offsets; no sharing at bytecode level.
+    6. CFG must treat them as separate blocks (they are separate).
+    7. No need to "merge" them — each copy is structurally independent.
+
+  ## RERAISE oparg in finally context
+
+  RERAISE 1 (oparg=1): appears at end of exception-path finally copy.
+    Pops lasti from stack, sets f_lasti, then re-raises exception.
+    The lasti was pushed by the exception table handler entry (lasti=True).
+  RERAISE 0 (oparg=0): appears in except handlers (no lasti restoration needed).
+<<<END>>>
+
+SOURCE
+id: 30
+ts: 2026-05-28T00:30:00Z
+relevance: HIGH
+title: Cross-version CFG construction recipe for pflow (synthesis from all sources)
+authors: pflow research synthesis
+year: 2026
+venue: (synthesis)
+quality: DOCS
+url: (internal)
+keywords: CFG recipe, block leaders, exception edges, version-gated, 3.12 vs 3.13 vs 3.14, pflow
+cites: all records in this file
+cited_by:
+content:
+  ## Algorithm for building CFG from CPython bytecode (3.12-3.14)
+
+  STEP 1: Get instructions
+    3.12: instrs = list(dis.get_instructions(code, show_caches=False))
+          # no cache-instruction items with default; each Instruction has 9 fields
+    3.13+: instrs = list(dis.get_instructions(code))
+           # show_caches deprecated; cache info in instr.cache_info; 12 fields + properties
+
+  STEP 2: Parse exception table (all versions — same API)
+    exc_entries = dis._parse_exception_table(code)
+    # Returns list of _ExceptionTableEntry(start, end, target, depth, lasti)
+    # start, end, target are byte offsets; end is EXCLUSIVE
+    # depth = stack depth at try entry; lasti = bool (push instruction offset?)
+
+  STEP 3: Identify block leaders
+    All versions:
+      leaders = {0}  # first instruction always a leader
+      # From jump targets:
+      for instr in instrs:
+          if instr.is_jump_target:  # True in all versions
+              leaders.add(instr.offset)
+      # From exception table targets:
+      for entry in exc_entries:
+          leaders.add(entry.target)
+      # After unconditional terminators (dead code / start of next block):
+      for i, instr in enumerate(instrs[:-1]):
+          if is_unconditional_terminator(instr):
+              leaders.add(instrs[i+1].offset)
+
+    Version note on is_jump_target:
+      3.12: covers jump targets ONLY (not exception table targets)
+      3.13+: covers BOTH jump targets AND exception table targets
+             (because _make_labels_map includes exception_entries targets)
+      SAFE: always add exc_entries targets explicitly (works for both versions)
+
+  STEP 4: Split instructions into basic blocks
+    Group instructions into blocks: each block starts at a leader offset.
+    Block ends at: next leader - 1 (inclusive) OR at terminator instruction.
+
+  STEP 5: Build CFG edges
+
+    a) Normal (fallthrough) edges:
+       If block does not end with unconditional terminator:
+         block.successors.add(next_block)
+
+    b) Jump edges:
+       3.12: compute from argval (often resolved) or manual:
+         if instr.opname in hasjrel:
+           target = instr.offset + 2 + instr.arg*2 + 2*cache_size
+         elif instr.opname in hasjabs:
+           target = instr.arg*2
+       3.13+: use instr.jump_target (property, already computed)
+       Add edge from current block to target block.
+
+    c) Exception edges:
+       for entry in exc_entries:
+           # All instructions with offset in [entry.start, entry.end) → entry.target
+           for instr in instructions_in_range(entry.start, entry.end):
+               instr_block.exception_successors.add(blocks[entry.target])
+
+  STEP 6: Identify exception handler blocks
+    Handler blocks = blocks whose leader is in {entry.target for entry in exc_entries}
+    These blocks start with PUSH_EXC_INFO (3.11+).
+    In CPython's internal rep: b_except_handler=True for these blocks.
+
+  ## Unconditional terminators (is_unconditional_terminator)
+
+  3.12 and 3.13:
+    RETURN_VALUE, RETURN_CONST, RAISE_VARARGS, RERAISE,
+    JUMP_FORWARD, JUMP_BACKWARD, JUMP_BACKWARD_NO_INTERRUPT
+
+  3.14 only (RETURN_CONST removed):
+    RETURN_VALUE, RAISE_VARARGS, RERAISE,
+    JUMP_FORWARD, JUMP_BACKWARD, JUMP_BACKWARD_NO_INTERRUPT
+
+  ## Conditional terminators (two successors: jump target + fallthrough)
+
+  All 3.12-3.14:
+    POP_JUMP_IF_TRUE, POP_JUMP_IF_FALSE, POP_JUMP_IF_NONE, POP_JUMP_IF_NOT_NONE
+    FOR_ITER (jump on exhaustion)
+    SEND (jump on StopIteration)
+
+  ## Version-gated opcode checks for pflow
+
+  import sys
+  PY_VERSION = sys.version_info[:2]
+
+  if PY_VERSION >= (3, 14):
+      HAS_RETURN_CONST = False
+      HAS_BEFORE_WITH = False
+      HAS_LOAD_SPECIAL = True
+      HAS_POP_ITER = True
+  elif PY_VERSION >= (3, 12):
+      HAS_RETURN_CONST = True
+      HAS_BEFORE_WITH = True
+      HAS_LOAD_SPECIAL = False
+      HAS_POP_ITER = False
+
+  UNCONDITIONAL_TERMINATORS = {
+      'RETURN_VALUE', 'RAISE_VARARGS', 'RERAISE',
+      'JUMP_FORWARD', 'JUMP_BACKWARD', 'JUMP_BACKWARD_NO_INTERRUPT',
+  }
+  if HAS_RETURN_CONST:
+      UNCONDITIONAL_TERMINATORS.add('RETURN_CONST')
+
+  ## Cross-version jump_target computation
+
+  def get_jump_target(instr, code):
+      """Works across 3.12-3.14"""
+      # 3.13+: property available
+      if hasattr(instr, 'jump_target') and not isinstance(instr.jump_target, property):
+          try:
+              jt = instr.jump_target  # computed property
+              return jt
+          except Exception:
+              pass
+      # 3.12 fallback: use dis._get_jump_target or manual computation
+      import dis
+      return dis._get_jump_target(instr.opcode, instr.arg, instr.offset)
+    # NOTE: dis._get_jump_target is private; use with caution.
+    # Alternatively: use instr.argval if it's an integer offset.
+
+  ## Cross-version line number extraction
+
+  def get_line_number(instr):
+      """Works across 3.12-3.14"""
+      # 3.13+: instr.line_number is directly available
+      if hasattr(instr, 'line_number') and not callable(getattr(type(instr), 'line_number', None)):
+          return instr.line_number
+      # 3.12: starts_line contains the line number if starting a new line; otherwise None
+      if instr.starts_line is not None and isinstance(instr.starts_line, int):
+          return instr.starts_line
+      return None  # must track externally using linestarts dict
+<<<END>>>
+
+
+SOURCE
+id: 31
+ts: 2026-05-28T00:31:00Z
+relevance: HIGH
+title: EXTENDED_ARG handling and HAVE_ARGUMENT threshold across 3.12-3.14
+authors: Python core developers + community
+year: 2023-2025
+venue: CPython source, python docs, laike9m.com/blog/demystifying-extended_arg,124/
+quality: DOCS
+url: https://docs.python.org/3/library/dis.html
+keywords: EXTENDED_ARG, argument accumulation, HAVE_ARGUMENT, dis.hasarg, 3.12 hasarg, argument-less opcodes
+cites:
+cited_by:
+content:
+  ## EXTENDED_ARG opcode
+
+  EXTENDED_ARG = 144 (numeric value, stable across 3.12-3.14).
+  Purpose: extend the 8-bit argument to larger values.
+  Format: up to 3 EXTENDED_ARG instructions can precede any instruction.
+  Argument accumulation: extended_arg = (extended_arg << 8) | instr.arg
+    Each EXTENDED_ARG shifts left 8 bits and ORs with next byte.
+    Final instruction gets (accumulated_arg | its_own_arg).
+  Max argument with 3 EXTENDED_ARGs: 32-bit value.
+
+  ## HAVE_ARGUMENT threshold
+
+  Value: 90 in 3.12 and earlier.
+  Meaning: real opcodes with opcode >= 90 have an argument; < 90 do not.
+  DEPRECATED since 3.13: use dis.hasarg instead.
+  In 3.12: HAVE_ARGUMENT still meaningful for real (non-pseudo) opcodes.
+
+  ## dis.hasarg (added 3.12)
+
+  Preferred alternative to HAVE_ARGUMENT check.
+  Contains all opcodes (including pseudo instructions) that use their argument.
+  Use: instr.opname in dis.hasarg  (or opcode in dis.hasarg)
+
+  ## Argument-handling in _unpack_opargs
+
+  From dis.py (both 3.12 and 3.13+):
+  extended_arg = 0
+  for i in range(0, len(code), 2):
+      op = code[i]
+      deop = _deoptop(op)
+      if deop in hasarg:
+          arg = code[i+1] | extended_arg
+          extended_arg = (arg << 8) if deop == EXTENDED_ARG else 0
+      else:
+          arg = None
+          extended_arg = 0
+
+  IMPORTANT: EXTENDED_ARG instructions ARE yielded by _unpack_opargs.
+  In dis.get_instructions():
+    EXTENDED_ARG: start_offset stays the same as offset (no accumulated prefix).
+    The next real instruction: start_offset = first EXTENDED_ARG's offset.
+    So instr.start_offset != instr.offset when EXTENDED_ARG prefixes are present.
+
+  ## Opcodes without arguments (opcode < 90, 3.12)
+
+  Common ones relevant to CFG:
+    PUSH_EXC_INFO   = 35 (no arg)
+    CHECK_EXC_MATCH = 36 (no arg)
+    WITH_EXCEPT_START = 49 (no arg)
+    BEFORE_WITH     = 53 (no arg — but SETS UP exception handler)
+    POP_EXCEPT      = 89 (no arg)
+
+  Wait: the earlier fetch showed BEFORE_WITH = 53 (no arg in opcode.py)
+  but it HAS an oparg for stack depth. Clarification needed.
+  [NOTE: BEFORE_WITH in 3.12 opcode.py listed as 53. Its oparg = lasti preservation flag.]
+
+  ## Argument handling for CFG jump computation (key summary)
+
+  When building CFG:
+  1. Use dis.get_instructions() — EXTENDED_ARG handling is automatic.
+     Each Instruction.arg is already the accumulated full argument.
+     instr.start_offset points to first EXTENDED_ARG prefix.
+  2. Don't iterate co_code bytes directly for jumps — offsets include CACHE and EXTENDED_ARG.
+  3. Jump target formula (all relative jumps in 3.12-3.14):
+     target = instr.offset + 2 + instr.arg * 2 + 2 * cache_size
+     For backward jumps: arg is used as-is (negative sign handled by subtracting not adding)
+     (See _get_jump_target in dis.py for authoritative formula)
+  4. In 3.13+: just use instr.jump_target (property; already computed).
+<<<END>>>
+
+SOURCE
+id: 32
+ts: 2026-05-28T00:32:00Z
+relevance: MED
+title: Python 3.14.0 dis.py source (stable release) — _make_labels_map, findlabels (verbatim)
+authors: Python core developers
+year: 2025
+venue: raw.githubusercontent.com/python/cpython/v3.14.0/Lib/dis.py
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython/v3.14.0/Lib/dis.py
+keywords: _make_labels_map, findlabels 3.14, exception_entries inclusion in labels, is_jump_target semantics 3.14
+cites:
+cited_by:
+content:
+  ## _make_labels_map (3.13+ / 3.14.0 stable)
+
+  Creates mapping from byte offset → logical label number.
+  Input: (original_code, exception_entries=())
+  Returns: dict[int, int]  (offset → label_number, 1-indexed)
+
+  Algorithm:
+    labels = set()
+    # Add jump targets:
+    labels |= set(findlabels(code))
+    # Add exception table targets:
+    for entry in exception_entries:
+        labels.add(entry.target)
+    # Assign sequential numbers:
+    return {offset: i+1 for i, offset in enumerate(sorted(labels))}
+
+  KEY: Exception handler targets (entry.target) ARE in the labels_map.
+  Therefore: instructions at exception handler targets have label set.
+  Therefore: their is_jump_target property returns True (since label is not None).
+
+  ## findlabels in 3.14.0 (same as 3.13+)
+
+  Uses _get_jump_target() which handles all relative jumps.
+  hasjabs is empty list → only relative jumps processed.
+  Returns list of byte offsets that are jump targets.
+  Does NOT include exception table targets.
+  (Exception table targets added separately in _make_labels_map.)
+
+  ## dis.Instruction in 3.14.0 stable — same as main branch
+
+  Same 12 namedtuple fields + properties as documented in records 5 and 26.
+  No additional changes between 3.13 and 3.14 for Instruction fields.
+
+  ## Confirmed 3.14.0 stable features
+
+  show_positions parameter: available in Bytecode.__init__, dis.dis(), etc.
+  Instruction.positions: always populated (Positions namedtuple).
+  RETURN_CONST: NOT in 3.14.0 opmap (confirmed removed).
+  BEFORE_WITH: NOT in 3.14.0 opmap (confirmed removed).
+  LOAD_SPECIAL: present in 3.14.0.
+  POP_ITER: present in 3.14.0.
+  NOT_TAKEN: present in 3.14.0.
+<<<END>>>
+
+
+SOURCE
+id: 33
+ts: 2026-05-28T00:33:00Z
+relevance: HIGH
+title: PyCodeObject structure — co_exceptiontable, co_linetable, co_code_adaptive fields
+authors: Python core developers
+year: 2026
+venue: raw.githubusercontent.com/python/cpython/main/Include/cpython/code.h
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython/main/Include/cpython/code.h
+keywords: PyCodeObject, co_exceptiontable, co_linetable, co_code_adaptive, co_flags, co_firstlineno, co_stacksize, co_version
+cites:
+cited_by:
+content:
+  ## PyCodeObject struct definition (from code.h)
+
+  Constructed via _PyCode_DEF(SIZE) macro. Key fields:
+
+  Hot fields (performance-critical):
+    PyObject *co_consts         — list of constants used (co_consts[i] = constant)
+    PyObject *co_names          — list of name strings
+    PyObject *co_exceptiontable — "Byte string encoding exception handling table"
+                                  Type: PyObject* (bytes object)
+    int co_flags                — control flags (CO_OPTIMIZED, CO_NEWLOCALS, CO_VARARGS, etc.)
+
+  Core metadata:
+    int co_argcount             — positional argument count
+    int co_posonlyargcount      — positional-only argument count
+    int co_kwonlyargcount       — keyword-only argument count
+    int co_stacksize            — evaluation stack size needed
+    int co_firstlineno          — "first source line number"
+    int co_nlocals              — number of local variables
+
+  Line and location info:
+    PyObject *co_linetable      — "bytes object that holds location info"
+                                  (co_linetable encodes both line numbers AND column positions)
+    char co_code_adaptive[(SIZE)] — adaptive bytecode array (not co_code in 3.11+)
+
+  Version tracking:
+    uint32_t co_version
+    uintptr_t _co_instrumentation_version
+
+  ## co_exceptiontable access from Python
+
+  Python: code.co_exceptiontable  (bytes object)
+  Parsed by: dis._parse_exception_table(code) → list of _ExceptionTableEntry
+
+  ## co_linetable access from Python
+
+  Python: code.co_linetable  (bytes object, encoding is opaque/version-dependent)
+  API: code.co_lines()       → iterator of (start, end, line) tuples
+       code.co_positions()   → iterator of (lineno, end_lineno, col_offset, end_col_offset) tuples
+
+  ## co_code in 3.11+
+
+  In 3.11+: code.co_code returns bytes (recreated from co_code_adaptive).
+  The underlying storage is co_code_adaptive (mutable array in the struct).
+  co_code is a read-only property producing a bytes copy.
+
+  ## IS_TERMINATOR_OPCODE usage (from assemble.c)
+
+  Macro IS_TERMINATOR_OPCODE is USED in assemble.c:
+    if (IS_TERMINATOR_OPCODE(instr->i_opcode)) {
+        instr->i_loc = NO_LOCATION;
+    }
+  But defined in: pycore_opcode_metadata.h (included by assemble.c).
+  Could not extract exact definition from available sources.
+  From context: covers RETURN_VALUE, RERAISE, RAISE_VARARGS, JUMP_FORWARD,
+                JUMP_BACKWARD, JUMP_BACKWARD_NO_INTERRUPT, RETURN_CONST (3.12/3.13).
+  Essentially: IS_SCOPE_EXIT_OPCODE ∪ IS_UNCONDITIONAL_JUMP_OPCODE.
+<<<END>>>
+
+SOURCE
+id: 34
+ts: 2026-05-28T00:34:00Z
+relevance: HIGH
+title: LOAD_SMALL_INT opcode — Python 3.14 small integer optimization
+authors: Python core developers
+year: 2025
+venue: docs.python.org/3/library/dis.html + github.com/python/cpython/issues/140256
+quality: DOCS
+url: https://docs.python.org/3/library/dis.html
+keywords: LOAD_SMALL_INT, small integer, oparg=integer value, co_consts replacement, 3.14 optimization
+cites:
+cited_by:
+content:
+  ## LOAD_SMALL_INT (Python 3.14)
+
+  Opcode: LOAD_SMALL_INT(i)
+  Stack effect: pushes integer value equal to oparg i onto stack.
+  oparg: the integer value itself (NOT an index into co_consts).
+  Range: "small integers" — exact range not documented but implied by name (likely -5 to 256 or similar).
+
+  Purpose: Replaces LOAD_CONST for commonly-used small integer literals.
+  Avoids storing small integers in co_consts table.
+  oparg IS the value, not a reference to co_consts.
+
+  NOT a basic-block terminator.
+  Added 3.14.
+
+  Known issue (gh-140256): LOAD_SMALL_INT has empty argrepr via Bytecode
+    (dis doesn't show the integer value in argrepr by default — display bug, not semantic issue).
+
+  ## LOAD_COMMON_CONSTANT (Python 3.14)
+
+  Loads commonly-used constants (presumably None, True, False, etc.) directly.
+  oparg encodes which constant via dedicated enum.
+  Similar to LOAD_SMALL_INT but for non-integer constants.
+  NOT a basic-block terminator.
+
+  ## pflow implication
+
+  In 3.14, RETURN_CONST is removed. Small integer returns become:
+    LOAD_SMALL_INT  <value>
+    RETURN_VALUE
+  Regular constant returns:
+    LOAD_CONST   <consti>
+    RETURN_VALUE
+  None return (implicit): 
+    LOAD_COMMON_CONSTANT  <None enum>
+    RETURN_VALUE
+  (or possibly LOAD_CONST   None  depending on optimizer decisions)
+<<<END>>>
+
+
+SOURCE
+id: 35
+ts: 2026-05-28T00:35:00Z
+relevance: HIGH
+title: pycore_opcode_utils.h — IS_TERMINATOR_OPCODE, IS_SCOPE_EXIT_OPCODE, IS_UNCONDITIONAL_JUMP_OPCODE (verbatim definitions)
+authors: Python core developers
+year: 2026
+venue: raw.githubusercontent.com/python/cpython/main/Include/internal/pycore_opcode_utils.h
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython/main/Include/internal/pycore_opcode_utils.h
+keywords: IS_TERMINATOR_OPCODE, IS_SCOPE_EXIT_OPCODE, IS_UNCONDITIONAL_JUMP_OPCODE, IS_CONDITIONAL_JUMP_OPCODE, JUMP, JUMP_NO_INTERRUPT, RETURN_VALUE, RERAISE, RAISE_VARARGS
+cites:
+cited_by:
+content:
+  ## IS_TERMINATOR_OPCODE (verbatim)
+
+  #define IS_TERMINATOR_OPCODE(opcode) \
+          (OPCODE_HAS_JUMP(opcode) || IS_SCOPE_EXIT_OPCODE(opcode))
+
+  Meaning: a terminator is ANY opcode that has a jump (conditional OR unconditional)
+           OR is a scope exit (return/raise).
+
+  ## IS_SCOPE_EXIT_OPCODE (verbatim)
+
+  #define IS_SCOPE_EXIT_OPCODE(opcode) \
+          ((opcode) == RETURN_VALUE || \
+           (opcode) == RAISE_VARARGS || \
+           (opcode) == RERAISE)
+
+  EXACTLY: RETURN_VALUE, RAISE_VARARGS, RERAISE
+  NOTE: RETURN_CONST is NOT listed here!
+    In 3.12/3.13: RETURN_CONST must also be a scope exit (terminates block).
+    Possible explanation: RETURN_CONST was a pseudo-instruction in codegen or
+    was added separately. Check if RETURN_CONST was present at time of this macro.
+    ALTERNATIVELY: RETURN_CONST may have been converted to RETURN_VALUE before
+    the flow graph check, or IS_SCOPE_EXIT_OPCODE was updated for 3.12.
+    [OPEN QUESTION: Is IS_SCOPE_EXIT_OPCODE exactly as shown for 3.12/3.13?]
+
+  ## IS_UNCONDITIONAL_JUMP_OPCODE (verbatim)
+
+  #define IS_UNCONDITIONAL_JUMP_OPCODE(opcode) \
+          ((opcode) == JUMP || \
+           (opcode) == JUMP_NO_INTERRUPT || \
+           (opcode) == JUMP_FORWARD || \
+           (opcode) == JUMP_BACKWARD || \
+           (opcode) == JUMP_BACKWARD_NO_INTERRUPT)
+
+  EXACTLY:
+    JUMP                  — pseudo-instruction (appears only in intermediate rep)
+    JUMP_NO_INTERRUPT     — pseudo-instruction
+    JUMP_FORWARD          — real opcode
+    JUMP_BACKWARD         — real opcode
+    JUMP_BACKWARD_NO_INTERRUPT — real opcode
+
+  JUMP and JUMP_NO_INTERRUPT: pseudo-instructions used during flowgraph/codegen;
+    replaced by JUMP_FORWARD or JUMP_BACKWARD in final bytecode.
+
+  ## IS_CONDITIONAL_JUMP_OPCODE (verbatim)
+
+  #define IS_CONDITIONAL_JUMP_OPCODE(opcode) \
+          ((opcode) == POP_JUMP_IF_FALSE || \
+           (opcode) == POP_JUMP_IF_TRUE || \
+           (opcode) == POP_JUMP_IF_NONE || \
+           (opcode) == POP_JUMP_IF_NOT_NONE)
+
+  EXACTLY: POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE, POP_JUMP_IF_NONE, POP_JUMP_IF_NOT_NONE
+
+  NOTE: FOR_ITER and SEND are NOT listed here but ARE conditional terminators
+  at the Python-visible bytecode level.
+  FOR_ITER jumps on iterator exhaustion; SEND jumps on StopIteration.
+  They may be handled separately in flowgraph analysis.
+
+  ## check_cfg() (verbatim — uses IS_TERMINATOR_OPCODE)
+
+  static int
+  check_cfg(cfg_builder *g) {
+      for (basicblock *b = g->g_entryblock; b != NULL; b = b->b_next) {
+          for (int i = 0; i < b->b_iused; i++) {
+              int opcode = b->b_instr[i].i_opcode;
+              assert(!IS_ASSEMBLER_OPCODE(opcode));
+              if (IS_TERMINATOR_OPCODE(opcode)) {
+                  if (i != b->b_iused - 1) {
+                      PyErr_SetString(PyExc_SystemError,
+                          "malformed control flow graph.");
+                      return ERROR;
+                  }
+              }
+          }
+      }
+      return SUCCESS;
+  }
+
+  Validates: all terminator opcodes appear ONLY at the last position in their block.
+
+  ## #includes in flowgraph.c (from assemble.c fetch)
+
+  #include "pycore_opcode_utils.h"    ← defines IS_TERMINATOR_OPCODE etc.
+  #include "pycore_opcode_metadata.h" ← defines IS_PSEUDO_INSTR, opcode flags
+
+  ## Summary: real-bytecode terminators (for Python-level CFG from dis)
+
+  SCOPE EXITS (IS_SCOPE_EXIT_OPCODE): RETURN_VALUE, RAISE_VARARGS, RERAISE
+  UNCONDITIONAL JUMPS (final bytecode only): JUMP_FORWARD, JUMP_BACKWARD, JUMP_BACKWARD_NO_INTERRUPT
+  CONDITIONAL jumps (two successors): POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE,
+    POP_JUMP_IF_NONE, POP_JUMP_IF_NOT_NONE, FOR_ITER, SEND
+
+  In final compiled bytecode (dis output), JUMP and JUMP_NO_INTERRUPT never appear
+  (they are pseudo-instructions resolved to JUMP_FORWARD or JUMP_BACKWARD).
+<<<END>>>
+
+
+SOURCE
+id: 36
+ts: 2026-05-28T00:36:00Z
+relevance: HIGH
+title: pycore_opcode_utils.h Python 3.12 — IS_SCOPE_EXIT_OPCODE includes RETURN_CONST
+authors: Python core developers
+year: 2023
+venue: raw.githubusercontent.com/python/cpython/v3.12.0/Include/internal/pycore_opcode_utils.h
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython/v3.12.0/Include/internal/pycore_opcode_utils.h
+keywords: IS_SCOPE_EXIT_OPCODE 3.12, RETURN_CONST in IS_SCOPE_EXIT, IS_TERMINATOR_OPCODE 3.12, IS_JUMP_OPCODE 3.12
+cites:
+cited_by:
+content:
+  ## IS_SCOPE_EXIT_OPCODE in Python 3.12.0 (verbatim)
+
+  #define IS_SCOPE_EXIT_OPCODE(opcode) \
+          ((opcode) == RETURN_VALUE || \
+           (opcode) == RETURN_CONST || \    ← PRESENT in 3.12!
+           (opcode) == RAISE_VARARGS || \
+           (opcode) == RERAISE)
+
+  KEY FINDING: RETURN_CONST IS included in IS_SCOPE_EXIT_OPCODE for Python 3.12.
+  This confirms RETURN_CONST terminates a basic block in 3.12.
+
+  ## IS_TERMINATOR_OPCODE in Python 3.12.0 (verbatim)
+
+  #define IS_TERMINATOR_OPCODE(opcode) \
+          (IS_JUMP_OPCODE(opcode) || IS_SCOPE_EXIT_OPCODE(opcode))
+
+  Note: 3.12 uses IS_JUMP_OPCODE (not OPCODE_HAS_JUMP as in main branch).
+
+  ## IS_UNCONDITIONAL_JUMP_OPCODE in Python 3.12.0 (verbatim)
+
+  #define IS_UNCONDITIONAL_JUMP_OPCODE(opcode) \
+          ((opcode) == JUMP || \
+           (opcode) == JUMP_NO_INTERRUPT || \
+           (opcode) == JUMP_FORWARD || \
+           (opcode) == JUMP_BACKWARD || \
+           (opcode) == JUMP_BACKWARD_NO_INTERRUPT)
+
+  Same as main branch.
+
+  ## Missing in 3.12
+
+  IS_CONDITIONAL_JUMP_OPCODE — not present in 3.12.0 version.
+  (Added later or in different file in 3.12 release.)
+
+  ## Complete IS_SCOPE_EXIT_OPCODE by version
+
+  Python 3.12-3.13:
+    IS_SCOPE_EXIT_OPCODE = RETURN_VALUE | RETURN_CONST | RAISE_VARARGS | RERAISE
+
+  Python 3.14+:
+    IS_SCOPE_EXIT_OPCODE = RETURN_VALUE | RAISE_VARARGS | RERAISE
+    (RETURN_CONST removed from both the opcode set AND from IS_SCOPE_EXIT_OPCODE)
+
+  ## Complete IS_UNCONDITIONAL_JUMP_OPCODE (all versions 3.12-3.14)
+
+  Final bytecode terminators (JUMP and JUMP_NO_INTERRUPT are pseudo; never in dis output):
+    JUMP_FORWARD
+    JUMP_BACKWARD
+    JUMP_BACKWARD_NO_INTERRUPT
+<<<END>>>
+
+SOURCE
+id: 37
+ts: 2026-05-28T00:37:00Z
+relevance: MED
+title: Python .pyc magic numbers for 3.12, 3.13, 3.14
+authors: Python core developers
+year: 2025
+venue: raw.githubusercontent.com/python/cpython/main/Include/internal/pycore_magic_number.h
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython/main/Include/internal/pycore_magic_number.h
+keywords: magic number, pyc format, Python 3.12 3518, Python 3.13 3571, Python 3.14 3627, pyc version identification
+cites:
+cited_by:
+content:
+  ## Magic number formula (3.11+)
+  Base = 2900 + 50 * minor_version
+  Python 3.12 base: 2900 + 50*12 = 3500
+  Python 3.13 base: 2900 + 50*13 = 3550
+  Python 3.14 base: 2900 + 50*14 = 3600
+
+  Incremented by 1 for each file format change within a minor version.
+
+  ## Python 3.12 magic number range: 3500-3531
+  Notable: 3518 = Add RETURN_CONST instruction
+  Final 3.12 stable release: 3531
+
+  ## Python 3.13 magic number range: 3550-3571
+  Notable: 3550 = Plugin optimizer support
+  Final 3.13 stable: ~3571
+
+  ## Python 3.14 magic number range: 3600-3627
+  Notable:
+    3600-3608: LOAD_COMMON_CONSTANT, LOAD_SPECIAL, slice changes
+    3609: Add LOAD_SMALL_INT, LOAD_CONST_IMMORTAL, remove RETURN_CONST
+    3610-3613: POP_ITER and other additions
+    3614-3627: binary ops, async monitoring, annotation fixes
+  As of 3.14.0rc2: magic number changed (discussion.python.org post)
+
+  ## .pyc file format
+  First 4 bytes of .pyc file:
+    bytes 0-1: magic number (uint16, little-endian)
+    bytes 2-3: '\r\n' (CR LF, prevents accidental text-mode corruption)
+  Then: flags (4 bytes), source mtime (4 bytes), source size (4 bytes), code object.
+
+  ## Relevance to pflow
+
+  To identify Python version from a .pyc file:
+    magic = struct.unpack('<H', data[0:2])[0]
+    if 3500 <= magic <= 3531: version = (3, 12)
+    elif 3550 <= magic <= 3571: version = (3, 13)
+    elif 3600 <= magic: version = (3, 14)  # approximate
+
+  NOTE: This is an approximate version gate; actual checks should use sys.version_info.
+<<<END>>>
+
+
+SOURCE
+id: 38
+ts: 2026-05-28T00:38:00Z
+relevance: HIGH
+title: pycore_opcode_utils.h main branch (3.14) — complete macro definitions verbatim
+authors: Python core developers
+year: 2026
+venue: raw.githubusercontent.com/python/cpython/main/Include/internal/pycore_opcode_utils.h
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython/main/Include/internal/pycore_opcode_utils.h
+keywords: IS_TERMINATOR_OPCODE, IS_SCOPE_EXIT_OPCODE, IS_UNCONDITIONAL_JUMP_OPCODE, IS_CONDITIONAL_JUMP_OPCODE, IS_BACKWARDS_JUMP_OPCODE, IS_RETURN_OPCODE, IS_RAISE_OPCODE, RESUME constants, CONSTANT_* enums
+cites:
+cited_by:
+content:
+  ## Complete verbatim macro definitions from main branch (Python 3.14)
+
+  #define IS_TERMINATOR_OPCODE(opcode) \
+          (OPCODE_HAS_JUMP(opcode) || IS_SCOPE_EXIT_OPCODE(opcode))
+
+  #define IS_SCOPE_EXIT_OPCODE(opcode) \
+          ((opcode) == RETURN_VALUE || \
+           (opcode) == RAISE_VARARGS || \
+           (opcode) == RERAISE)
+  NOTE: RETURN_CONST absent in 3.14 (removed from both opcode set and this macro).
+
+  #define IS_UNCONDITIONAL_JUMP_OPCODE(opcode) \
+          ((opcode) == JUMP || \
+           (opcode) == JUMP_NO_INTERRUPT || \
+           (opcode) == JUMP_FORWARD || \
+           (opcode) == JUMP_BACKWARD || \
+           (opcode) == JUMP_BACKWARD_NO_INTERRUPT)
+
+  #define IS_CONDITIONAL_JUMP_OPCODE(opcode) \
+          ((opcode) == POP_JUMP_IF_FALSE || \
+           (opcode) == POP_JUMP_IF_TRUE || \
+           (opcode) == POP_JUMP_IF_NONE || \
+           (opcode) == POP_JUMP_IF_NOT_NONE)
+
+  #define IS_BACKWARDS_JUMP_OPCODE(opcode) \
+          ((opcode) == JUMP_BACKWARD || \
+           (opcode) == JUMP_BACKWARD_NO_INTERRUPT)
+
+  #define IS_RETURN_OPCODE(opcode) \
+          (opcode == RETURN_VALUE)
+
+  #define IS_RAISE_OPCODE(opcode) \
+          (opcode == RAISE_VARARGS || opcode == RERAISE)
+
+  ## IS_ASSEMBLER_OPCODE (from text)
+  Checks for: JUMP_FORWARD, JUMP_BACKWARD, JUMP_BACKWARD_NO_INTERRUPT
+  (These are assembly-stage-only in some context? Or perhaps pseudo-instruction
+   level check. Exact definition not fully extracted.)
+
+  ## MAKE_FUNCTION flag bits
+
+  #define MAKE_FUNCTION_DEFAULTS    0x01
+  #define MAKE_FUNCTION_KWDEFAULTS  0x02
+  #define MAKE_FUNCTION_ANNOTATIONS 0x04
+  #define MAKE_FUNCTION_CLOSURE     0x08
+  #define MAKE_FUNCTION_ANNOTATE    0x10
+
+  ## Common constants (LOAD_COMMON_CONSTANT oparg values — Python 3.14)
+
+  #define CONSTANT_ASSERTIONERROR    0
+  #define CONSTANT_NOTIMPLEMENTEDERROR 1
+  #define CONSTANT_BUILTIN_TUPLE     2
+  #define CONSTANT_BUILTIN_ALL       3
+  #define CONSTANT_BUILTIN_ANY       4
+  #define CONSTANT_BUILTIN_LIST      5
+  #define CONSTANT_BUILTIN_SET       6
+  #define CONSTANT_NONE              7
+  #define CONSTANT_EMPTY_STR         8
+  #define CONSTANT_TRUE              9
+  #define CONSTANT_FALSE             10
+  #define CONSTANT_MINUS_ONE         11
+  #define CONSTANT_BUILTIN_FROZENSET 12
+  #define CONSTANT_EMPTY_TUPLE       13
+  #define NUM_COMMON_CONSTANTS       14
+
+  These are oparg values for LOAD_COMMON_CONSTANT opcode in 3.14.
+
+  ## RESUME oparg constants
+
+  #define RESUME_AT_FUNC_START      0
+  #define RESUME_AFTER_YIELD        1
+  #define RESUME_AFTER_YIELD_FROM   2
+  #define RESUME_AFTER_AWAIT        3
+  #define RESUME_AT_GEN_EXPR_START  4
+  #define RESUME_OPARG_LOCATION_MASK 0x7  ← bits 2-0: context
+  #define RESUME_OPARG_DEPTH1_MASK   0x8  ← bit 3: 1 if at except-depth 1 (3.13+)
+
+  For pflow CFG: RESUME is always the first instruction; has oparg indicating context.
+  In 3.13+: bit 3 set means function is at exception depth 1.
+  NOT a terminator. NOT a jump target normally. Block leader by virtue of being first.
+
+  ## Cross-version IS_SCOPE_EXIT_OPCODE summary (authoritative)
+
+  Python 3.12 (v3.12.0):
+    IS_SCOPE_EXIT_OPCODE = {RETURN_VALUE, RETURN_CONST, RAISE_VARARGS, RERAISE}
+
+  Python 3.13:
+    IS_SCOPE_EXIT_OPCODE = {RETURN_VALUE, RETURN_CONST, RAISE_VARARGS, RERAISE}
+    (RETURN_CONST still present in 3.13)
+
+  Python 3.14 (main branch):
+    IS_SCOPE_EXIT_OPCODE = {RETURN_VALUE, RAISE_VARARGS, RERAISE}
+    (RETURN_CONST removed)
+<<<END>>>
+
+
+SOURCE
+id: 39
+ts: 2026-05-28T00:39:00Z
+relevance: MED
+title: Discovering basic blocks from CPython bytecode — Max Bernstein
+authors: Max Bernstein
+year: 2020-2022
+venue: bernsteinbear.com/blog/discovering-basic-blocks/
+quality: BLOG
+url: https://bernsteinbear.com/blog/discovering-basic-blocks/
+keywords: basic block algorithm, block leaders, jump target, CODEUNIT_SIZE, CFG construction, two-pass algorithm
+cites:
+cited_by:
+content:
+  ## Two-pass algorithm for identifying basic block leaders
+
+  Pass 1 — Finding block starts:
+    leaders = {0}  # index 0 always a leader
+    for each instruction:
+      if instruction is_branch():
+        leaders.add(next_instr_idx())
+        leaders.add(jump_target_idx())
+      if instruction is return or raise:
+        leaders.add(next_instr_idx())  # dead code after return = new block
+    Sort leaders.
+
+  Pass 2 — Creating blocks:
+    blocks = [instructions[leaders[i]:leaders[i+1]] for consecutive pairs]
+
+  ## Control flow categories (article's 3.6 era, but principles still apply)
+
+  Branch instructions (two successors):
+    FOR_ITER, JUMP_ABSOLUTE, JUMP_FORWARD,
+    JUMP_IF_FALSE_OR_POP, JUMP_IF_TRUE_OR_POP (removed in 3.12),
+    POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE
+
+  Return instructions (one successor — none): RETURN_VALUE
+  Raise instructions (one successor — none): RAISE_VARARGS
+
+  NOTE: Article explicitly did NOT handle exception tables (admitted limitation).
+  NOTE: Article targets CPython 3.6+; does not cover 3.11+ exception table changes.
+
+  ## jump_target_idx formula (from article)
+
+  For relative branches: target = next_instr_offset() + arg
+  For absolute branches: target = arg
+  Convert offset to index: idx = offset // CODEUNIT_SIZE (= offset // 2)
+
+  ## Limitation for 3.11+ bytecode
+
+  Article does not address:
+    - Exception table entries as block leaders
+    - CACHE entries and their effect on offsets
+    - PUSH_EXC_INFO / RERAISE / RESUME opcodes
+    - co_exceptiontable parsing
+
+  ## FOR_ITER and SEND as conditional terminators (from doc research)
+
+  FOR_ITER(delta): calls __next__() on iterator.
+    Two successors:
+      1. Falls through to next instruction (iterator yields value)
+      2. Jumps delta ahead (iterator exhausted)
+    delta is relative to instruction after CACHE entries.
+    Block leader: both fallthrough and jump target.
+
+  SEND(delta): equivalent to stack[-2].send(stack[-1]).
+    Two successors:
+      1. Falls through (non-StopIteration result)
+      2. Jumps delta ahead (StopIteration — push .value)
+    Used for yield-from / await.
+    Both fallthrough and jump target are block leaders.
+
+  IS_CONDITIONAL_JUMP_OPCODE does NOT include FOR_ITER or SEND.
+  But both ARE conditional terminators in practice.
+  For pflow: treat FOR_ITER and SEND as conditional terminators separately.
+<<<END>>>
+
+
+SOURCE
+id: 40
+ts: 2026-05-28T00:40:00Z
+relevance: HIGH
+title: pycore_opcode_utils.h Python 3.12.0 — IS_JUMP_OPCODE via bit table, RETURN_CONST in IS_SCOPE_EXIT (verbatim confirm)
+authors: Python core developers
+year: 2023
+venue: raw.githubusercontent.com/python/cpython/v3.12.0/Include/internal/pycore_opcode_utils.h
+quality: CODE
+url: https://raw.githubusercontent.com/python/cpython/v3.12.0/Include/internal/pycore_opcode_utils.h
+keywords: IS_JUMP_OPCODE bit table, _PyOpcode_Jump, RETURN_CONST in IS_SCOPE_EXIT 3.12, IS_TERMINATOR_OPCODE 3.12
+cites:
+cited_by:
+content:
+  ## Python 3.12.0 IS_SCOPE_EXIT_OPCODE (CONFIRMED verbatim)
+
+  #define IS_SCOPE_EXIT_OPCODE(opcode) \
+          ((opcode) == RETURN_VALUE || \
+           (opcode) == RETURN_CONST || \   ← CONFIRMED: RETURN_CONST present in 3.12
+           (opcode) == RAISE_VARARGS || \
+           (opcode) == RERAISE)
+
+  ## Python 3.12.0 IS_TERMINATOR_OPCODE (CONFIRMED verbatim)
+
+  #define IS_TERMINATOR_OPCODE(opcode) \
+          (IS_JUMP_OPCODE(opcode) || IS_SCOPE_EXIT_OPCODE(opcode))
+
+  In 3.12: uses IS_JUMP_OPCODE (not OPCODE_HAS_JUMP as in main/3.14 branch).
+
+  ## IS_JUMP_OPCODE in 3.12
+
+  IS_JUMP_OPCODE: uses bit-table lookup: is_bit_set_in_table(_PyOpcode_Jump, opcode)
+  The _PyOpcode_Jump bit table encodes all opcodes with jump semantics.
+  Not a simple macro listing opcodes; uses generated bit table.
+
+  ## All macros in 3.12.0 pycore_opcode_utils.h
+
+  MAX_REAL_OPCODE
+  IS_WITHIN_OPCODE_RANGE
+  IS_JUMP_OPCODE (bit table: _PyOpcode_Jump)
+  IS_BLOCK_PUSH_OPCODE
+  HAS_TARGET
+  IS_TERMINATOR_OPCODE
+  IS_ASSEMBLER_OPCODE
+  IS_BACKWARDS_JUMP_OPCODE
+  IS_UNCONDITIONAL_JUMP_OPCODE
+  IS_SCOPE_EXIT_OPCODE
+  IS_SUPERINSTRUCTION_OPCODE
+  LOG_BITS_PER_INT (temp, defined and undefined)
+  MASK_LOW_LOG_BITS (temp, defined and undefined)
+
+  ## Comparison: 3.12.0 vs main branch (3.14)
+
+  IS_SCOPE_EXIT_OPCODE:
+    3.12.0: {RETURN_VALUE, RETURN_CONST, RAISE_VARARGS, RERAISE}
+    3.14:   {RETURN_VALUE, RAISE_VARARGS, RERAISE}
+
+  IS_TERMINATOR_OPCODE inner predicate:
+    3.12.0: IS_JUMP_OPCODE (bit table lookup)
+    3.14:   OPCODE_HAS_JUMP (different name, possibly same semantics)
+
+  IS_CONDITIONAL_JUMP_OPCODE:
+    3.12.0: NOT FOUND (may be absent or defined elsewhere)
+    3.14:   {POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE, POP_JUMP_IF_NONE, POP_JUMP_IF_NOT_NONE}
+
+  ## Note on dis.Bytecode.exception_entries
+
+  From Bytecode.__init__:
+    self.exception_entries = _parse_exception_table(co)
+  This is an INSTANCE ATTRIBUTE, not documented in official docs but accessible.
+  Returns list[_ExceptionTableEntry].
+  Available in ALL versions 3.12-3.14 (since Bytecode.__init__ always sets it).
+  Useful for pflow to access exception table without calling the private function directly:
+    bytecode = dis.Bytecode(func)
+    exc_entries = bytecode.exception_entries
+    # Returns list[_ExceptionTableEntry(start, end, target, depth, lasti)]
+<<<END>>>
+
+SOURCE
+id: 41
+ts: 2026-05-28T00:41:00Z
+relevance: HIGH
+title: CLEANUP_THROW opcode — Python 3.12 generator close exception handling
+authors: Python core developers (Brandt Bucher, gh-90997)
+year: 2022
+venue: docs.python.org/3/library/dis.html
+quality: DOCS
+url: https://docs.python.org/3/library/dis.html#opcode-CLEANUP_THROW
+keywords: CLEANUP_THROW, generator close, throw(), StopIteration, exception handling generator, 3.12 opcode
+cites:
+cited_by:
+content:
+  ## CLEANUP_THROW (Python 3.12)
+
+  Added in 3.12. (Contributed by Brandt Bucher in gh-90997)
+
+  Behavior:
+    If STACK[-1] is an instance of StopIteration:
+      pop three values from stack
+      push STACK[-1].value (the StopIteration value)
+    Else:
+      re-raise STACK[-1]
+
+  Used during throw() or close() calls on a generator/coroutine/async-generator.
+  Handles exception raised during these calls in the generator's frame.
+
+  NOT a block terminator in the conventional sense.
+  Conditionally terminates depending on exception type:
+    StopIteration case: continues (pushes value)
+    Other: re-raises (exits current frame)
+
+  For CFG purposes: CLEANUP_THROW is similar to a conditional terminator.
+  The re-raise path leads to exception propagation (like RERAISE).
+  The StopIteration path falls through to next instruction.
+
+  ## CLEANUP_THROW vs RERAISE
+
+  RERAISE: unconditionally terminates (always re-raises).
+  CLEANUP_THROW: conditionally terminates (may re-raise or continue).
+
+  ## Context in generator close/throw
+
+  When a generator's throw() or close() method is called:
+    The exception is thrown into the generator frame.
+    CLEANUP_THROW handles the case where a StopIteration is raised inside
+    a for-loop or yield-from expression within the generator.
+
+  ## pflow implication
+
+  For pflow CFG: CLEANUP_THROW should be treated as a two-successor node
+  if precise modeling is needed:
+    Successor 1: fallthrough (StopIteration case — value pushed)
+    Successor 2: exception propagation (re-raise case — exits)
+  Conservative approach: treat as non-terminator (only fallthrough modeled).
+<<<END>>>
+
+
+SOURCE
+id: 42
+ts: 2026-05-28T00:42:00Z
+relevance: HIGH
+title: CACHE entries, show_caches, and instr.argval semantics for jump targets
+authors: Python core developers + community
+year: 2023-2024
+venue: docs.python.org/3/library/dis.html + python-dev mailing list
+quality: DOCS
+url: https://docs.python.org/3/library/dis.html
+keywords: CACHE offset, show_caches, argval jump target, instr.argval, cache transparent, forward jumps, backward jumps, 3.12 3.13
+cites:
+cited_by:
+content:
+  ## CACHE entries and their effect on iteration
+
+  3.11: CACHE instructions introduced; show_caches=True includes them as separate items.
+  3.12: show_caches=True still works; CACHE items included in iteration.
+        Jump argument = offset relative to instruction AFTER cache entries.
+        Forward jumps: transparent (cache entries after jump, target already past them).
+        Backward jumps: cache entries of jump instruction included in offset calculation.
+  3.13: show_caches DEPRECATED for get_instructions(); cache info in Instruction.cache_info.
+        No separate CACHE Instruction items emitted.
+
+  ## instr.argval for jump instructions
+
+  In 3.12:
+    argval = resolved jump target byte offset (int)
+    For relative jumps: argval = instr.offset + 2 + instr.arg*2 + 2*cache_size
+    For absolute jumps: argval = instr.arg*2
+    NOTE: argval IS the byte offset. You can use it directly to find the target instruction.
+
+  In 3.13+:
+    argval = "resolved arg value (if any)"
+    For jump instructions: argval = target LABEL string (e.g., "L1") NOT an int offset!
+    (Because 3.13 shows logical labels in dis output.)
+    HOWEVER: instr.jump_target = byte offset (int) ← use this for CFG construction.
+
+  ## Recommended approach for getting jump target offset (all versions)
+
+  def get_jump_target_offset(instr):
+      # 3.13+: use .jump_target property directly
+      if hasattr(type(instr), 'jump_target') and \
+         isinstance(getattr(type(instr), 'jump_target', None), property):
+          return instr.jump_target  # int offset or None
+      # 3.12 fallback: use argval if it's an int, or dis._get_jump_target
+      if instr.opname in dis.hasjrel or instr.opname in (dis.hasjabs or []):
+          if isinstance(instr.argval, int):
+              return instr.argval
+      return None
+
+  Safest approach:
+    Use dis._parse_exception_table(co) and _get_jump_target separately.
+    Or: always call dis._get_jump_target(instr.opcode, instr.arg, instr.offset).
+    Private but stable across 3.12-3.14.
+
+  ## Effect of CACHE on offset counting for block-leader identification
+
+  When iterating dis.get_instructions() with default show_caches=False (all versions):
+    Instruction.offset = byte offset of the opcode word (not including CACHE entries).
+    CACHE entries are at offset+2, offset+4, etc. but NOT yielded as separate Instruction.
+    Next instruction after caches: offset + 2 + 2*cache_count.
+
+  The offsets visible in the Instruction stream are "real" instruction offsets.
+  Exception table start/end/target fields are also byte offsets (in same space).
+  So: direct comparison works: entry.target == instr.offset (no adjustment needed).
+
+  ## CACHE and show_caches in 3.12 when building block-leaders
+
+  If you use dis.get_instructions(code, show_caches=False) (DEFAULT in 3.12):
+    CACHE instructions NOT emitted.
+    Instruction offsets skip cache entries (offsets are non-contiguous by 2*caches).
+    findlabels() and jump_target computation already account for cache entries.
+    So: directly usable for block-leader identification.
+
+  If you use dis.get_instructions(code, show_caches=True) in 3.12:
+    CACHE instructions emitted between real instructions.
+    Each CACHE has opname='CACHE', its own offset.
+    Must filter out CACHE entries when building block-leaders:
+      leaders = {instr.offset for instr in instrs if instr.opname != 'CACHE'
+                 and instr.is_jump_target}
+
+  RECOMMENDATION: use show_caches=False (default) for CFG construction.
+    Simpler; CACHE entries don't affect control flow.
+    In 3.13+: show_caches ignored anyway.
+<<<END>>>
+
+
+SOURCE
+id: 43
+ts: 2026-05-28T00:43:00Z
+relevance: HIGH
+title: BEFORE_WITH opcode description (Python 3.11-3.13) and RETURN_GENERATOR / YIELD_VALUE semantics
+authors: Python core developers
+year: 2022-2024
+venue: docs.python.org/3.13/library/dis.html
+quality: DOCS
+url: https://docs.python.org/3.13/library/dis.html
+keywords: BEFORE_WITH stack effect, __enter__ __exit__ push order, RETURN_GENERATOR, YIELD_VALUE oparg, generator function first opcode
+cites:
+cited_by:
+content:
+  ## BEFORE_WITH (Python 3.11-3.13)
+
+  Official description:
+    "This opcode performs several operations before a with block starts.
+     First, it loads __exit__() from the context manager and pushes it onto the stack
+     for later use by WITH_EXCEPT_START. Then, __enter__() is called. Finally, the
+     result of calling the __enter__() method is pushed onto the stack."
+
+  Added in 3.11. Removed in 3.14.
+
+  Stack effect:
+    Input:  [..., context_manager]
+    Output: [..., __exit__method, __enter__result]
+    (context_manager consumed; __exit__ at -2, result at -1)
+
+  Oparg: not documented publicly. From opcode.py: 53 (numeric value).
+    From the BEFORE_WITH implementation: similar to SETUP_WITH in older Python.
+    No documented oparg meaning (treated as 0).
+
+  Exception table: BEFORE_WITH triggers creation of exception table entry covering
+  the with-body. The entry's depth and lasti fields are set so that at exception
+  handler entry: __exit__ is at the correct stack position for WITH_EXCEPT_START.
+
+  NOT a basic-block terminator.
+
+  ## BEFORE_ASYNC_WITH (Python 3.11-3.13)
+
+  Async variant of BEFORE_WITH.
+  Resolves __aenter__() and __aexit__() from the async context manager.
+  Removed in 3.14.
+
+  ## RETURN_GENERATOR (Python 3.11+)
+
+  Added in 3.11.
+  Description: "Create a generator, coroutine, or async generator from the current
+    frame. Used as first opcode of code objects for the above-mentioned callables.
+    Clear the current frame and return the newly created generator."
+
+  Key: RETURN_GENERATOR is the FIRST instruction in any generator/coroutine/async-gen
+  function code object. At Python bytecode level, calling a generator function
+  executes RETURN_GENERATOR which returns the generator WITHOUT executing the body.
+  Subsequent next()/send() calls RESUME from RESUME instructions.
+
+  NOT a basic-block terminator in the CFG of the generator function itself.
+  Terminates the "startup" portion and transitions to generator state.
+
+  ## YIELD_VALUE oparg (Python 3.13+)
+
+  3.12: YIELD_VALUE oparg = stack_depth (used internally)
+  3.13: YIELD_VALUE oparg = 1 if yield is part of yield-from or await, 0 otherwise.
+  "Changed in version 3.11: oparg set to stack depth. Changed in version 3.12: oparg
+   set to exception block depth, for efficient closing of generators."
+
+  NOT a basic-block terminator (resumes after yield).
+
+  ## Generator function bytecode structure (3.11+)
+
+  Function containing yield:
+    Offset 0: RESUME 0          ← entry point (oparg=0 = function start)
+    Wait... RETURN_GENERATOR is FIRST, before RESUME?
+
+  Actually from docs: "Used as first opcode in code objects for generators."
+  So code object starts: RETURN_GENERATOR, then RESUME 0, then body...
+  When generator is created: RETURN_GENERATOR executes, returns generator.
+  When generator.send(None) called: execution continues from RESUME.
+  RESUME marks the resumption point after RETURN_GENERATOR.
+<<<END>>>
+
+
+SOURCE
+id: 44
+ts: 2026-05-28T00:44:00Z
+relevance: HIGH
+title: Deciphering CPython 3.13 Bytecode through Experiments — concrete dis output examples
+authors: mima_ita
+year: 2024
+venue: zenn.dev/mima_ita/articles/c425d1ab1602a0
+quality: BLOG
+url: https://zenn.dev/mima_ita/articles/c425d1ab1602a0?locale=en
+keywords: Python 3.13 bytecode example, exception table concrete, LOAD_FAST_LOAD_FAST, FOR_ITER, JUMP_BACKWARD, RETURN_GENERATOR, YIELD_VALUE, exception table structure
+cites:
+cited_by:
+content:
+  ## Simple addition function bytecode (Python 3.13)
+
+  def add(x, y): return x + y
+
+  RESUME                   0
+  LOAD_FAST_LOAD_FAST      1 (x, y)    ← optimized pair load (3.13 new)
+  BINARY_OP                0 (+)
+  RETURN_VALUE
+
+  ## Exception table entry format (Python 3.13 concrete)
+
+  For try/except/finally, example exception table:
+  | Start | End | Target | Depth | lasti | Purpose |
+  | 4     | 26  | 50     | 0     | False | Exception in try block |
+  | 50    | 70  | 114    | 1     | True  | Type mismatch handling |
+  | 70    | 94  | 104    | 1     | True  | Exception in except body |
+
+  Observations:
+    - Multiple entries can cover overlapping/nested ranges
+    - Depth can be 0 or more (number of values to keep on stack)
+    - lasti=True for entries where f_lasti needs preservation (finally-like)
+    - lasti=False for simple except handlers
+
+  ## Loop bytecode pattern (Python 3.13)
+
+  FOR_ITER                 44 (to L4)   ← label, not raw offset in 3.13 display
+  STORE_FAST               1 (item)
+  [loop body]
+  JUMP_BACKWARD           46 (to L1)
+  END_FOR
+
+  Note: "to L4" and "to L1" are logical labels (3.13+ display).
+  JUMP_BACKWARD: backward relative jump, checks for interrupts.
+  FOR_ITER's delta: jumps to END_FOR (or past loop) on exhaustion.
+
+  ## Generator bytecode (Python 3.13)
+
+  RETURN_GENERATOR          ← first instruction: creates generator, returns it
+  RESUME                 0  ← actual entry point of generator body
+  LOAD_CONST             2 (1)
+  YIELD_VALUE            0  ← oparg=0 (not yield-from/await in 3.13)
+  RESUME                 5  ← oparg=5 means AFTER_YIELD + GEN_EXPR_START bit?
+                             Actually RESUME_AFTER_YIELD = 1, so oparg=5 unclear
+                             [POSSIBLE: 5 = 4|1 = GEN_EXPR_START|AFTER_YIELD?]
+  STORE_FAST             0 (x)
+
+  Key pattern: RETURN_GENERATOR as first instruction, then RESUME 0.
+  Generator body starts AFTER initial RETURN_GENERATOR.
+
+  ## Specialization/adaptive opcodes (3.13)
+
+  BINARY_OP may specialize to BINARY_OP_ADD_INT after runtime type observation.
+  CACHE tracks hit count; when threshold reached, specialization applied.
+  dis output with adaptive=True shows specialized opcodes.
+  dis output with adaptive=False (default) shows base opcodes.
+  For CFG construction: use default (non-adaptive) to see stable opcode names.
+
+  ## match statement pattern
+
+  MATCH_MAPPING, MATCH_KEYS, MATCH_SEQUENCE — for structural pattern matching.
+  POP_JUMP_IF_FALSE used to skip non-matching cases.
+  These add CFG branches in match arms.
+<<<END>>>
+
+SOURCE
+id: 45
+ts: 2026-05-28T00:45:00Z
+relevance: HIGH
+title: Nested exception table entries — multiple entries for nested try/with/try patterns
+authors: CPython assemble.c behavior + zenn.dev article
+year: 2024
+venue: Multiple CPython sources
+quality: DOCS
+url: https://github.com/python/cpython/blob/main/Python/assemble.c
+keywords: nested exception table entries, overlapping ranges, multiple entries, inner outer try, depth field nested
+cites:
+cited_by:
+content:
+  ## How nested try blocks produce multiple exception table entries
+
+  For:
+    try:                    ← outer try
+        try:                ← inner try
+            <body>
+        except TypeError:
+            <handler>
+    finally:
+        <cleanup>
+
+  Exception table has multiple entries:
+    Entry 1: (inner_try_start, inner_try_end, inner_handler, depth=N, lasti=False)
+    Entry 2: (outer_try_start, outer_try_end, outer_handler, depth=M, lasti=True)
+    Possibly also: (inner_handler_start, inner_handler_end, outer_handler, depth=M, lasti=True)
+
+  At runtime: when exception occurs, first matching entry (start <= offset < end) is used.
+  More specific (inner) entries should appear before less specific (outer) entries.
+  CPython sorts entries by start offset; inner try starts first for nested blocks.
+
+  ## Depth field meaning for nested handlers
+
+  depth = stack depth at entry to the protected region.
+  For outer try: depth = stack depth before outer try.
+  For inner try (inside outer): depth = stack depth at inner try entry.
+    This is HIGHER than outer depth (outer may have pushed values before inner try).
+
+  When exception jumps to handler: stack popped to entry.depth, then exception pushed.
+  So the correct stack is restored for the handler.
+
+  ## lasti field meaning in practice
+
+  lasti=True: handler is a finally block (needs to re-raise with original f_lasti).
+  lasti=False: handler is an except block (RERAISE 0 doesn't need original offset).
+  Determining from dis output:
+    Handler body starts with PUSH_EXC_INFO.
+    If handler ends with RERAISE 1: lasti=True in exception table entry.
+    If handler ends with RERAISE 0: lasti=False.
+    If handler ends with POP_EXCEPT + JUMP: except clause (not re-raise).
+
+  ## with-statement inside try
+
+  with ctx:
+    try:
+        <body>
+    except:
+        <handler>
+
+  Produces exception table entries for BOTH:
+    1. with-body exception → with-exception handler (calls __exit__)
+    2. inner try-body exception → except handler
+
+  The entries may be nested: inner (try inside with) appears first.
+  The outer (with-body) entry covers the wider range.
+
+  ## Ordering guarantee
+
+  From assemble.c: entries emitted in order of instruction traversal.
+  For nested blocks: inner entries precede outer entries in exception table.
+  At runtime: first matching entry is used (innermost handler takes priority).
+<<<END>>>
+

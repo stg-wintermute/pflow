@@ -1,0 +1,9 @@
+MINER_DUMP
+topic: Code Clone / Duplicate / Semantic-Equivalence / Reimplementation Detection
+depth: 3
+date: 2026-05-28
+status: IN_PROGRESS
+record_count: 0
+context: For pflow compiler pass that flags "this duplicates/reimplements existing code → reuse instead"
+         pflow has CFG + def-use + dominators/post-dominators per function + cross-file program graph
+<<<END>>>

@@ -1,0 +1,1590 @@
+MINER_DUMP
+topic: Control-flow and data-flow complexity metrics for simplification — McCabe essential complexity, cognitive complexity, NPATH, knots, Halstead, live-range, Oviedo, DepDegree, tool support
+depth: 2
+date: 2026-05-29
+status: IN_PROGRESS
+record_count: 0
+<<<END>>>
+
+SOURCE
+id: 1
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: A Complexity Measure
+authors: Thomas J. McCabe
+year: 1976
+venue: IEEE Transactions on Software Engineering, Vol. SE-2, No. 4, pp. 308-320
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1109/TSE.1976.233837
+keywords: cyclomatic complexity, control flow graph, basis paths, structured programming, V(G)
+cites:
+cited_by: Essential complexity (McCabe follow-on), NPATH (Nejmeh 1988), virtually all subsequent complexity metric work
+content:
+  PRIMARY METRIC: Cyclomatic Complexity V(G)
+  Formula: V(G) = E - N + 2P
+    E = number of edges in the control-flow graph
+    N = number of nodes in the control-flow graph
+    P = number of connected components (P=1 for a single function/subroutine)
+    For a single connected component: V(G) = E - N + 2
+  
+  ALTERNATIVE FORMULA (for strongly-connected graph, exit looped back to entry):
+    V(G) = E - N + P
+  
+  ALTERNATIVE FORMULA (decision-point method):
+    V(G) = number of binary decision points + 1
+    (at machine-instruction level; each predicate = 1 binary decision)
+  
+  ALGEBRAIC INTERPRETATION:
+    V(G) = dimension of the cycle space of G over GF(2)
+    V(G) = first Betti number = rank H_1(G, t)
+  
+  MEANING: Number of linearly independent paths through the CFG;
+    upper bound on number of test cases for branch coverage;
+    lower bound on number of paths.
+  
+  CFG CONSTRUCTION: Each node = sequence of non-branching statements.
+    Decision points split into two edges (if-then → two outgoing edges).
+    Exit node has back-edge to entry node to make graph strongly connected.
+  
+  T1-T2 REDUCTION (cited in later works on essential complexity):
+    T1: remove self-loop on a node (reduces V by 0, cleans graph)
+    T2: replace a node with exactly one predecessor and one successor by a
+        single edge (collapses sequential sequences)
+    These reductions simulate structured programming condensation.
+  
+  RISK THRESHOLDS (McCabe's original categorization):
+    V(G) 1-10:  Simple, little risk
+    V(G) 11-20: Moderate complexity and risk
+    V(G) 21-50: Complex, high risk
+    V(G) > 50:  Untestable code, very high risk
+
+  EXTENSION - MULTIPLE EXIT POINTS:
+    V(G) = pi - s + 2  (pi = decision points, s = number of exit points)
+  
+  CC2 (extended): CC2 = V(G) + Boolean operators (each And/Or inside condition)
+  CC3 (modified): Treats entire switch/select-case as one decision (not per case)
+<<<END>>>
+
+SOURCE
+id: 2
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: Essential Complexity (derived from McCabe 1976)
+authors: Thomas J. McCabe
+year: 1976
+venue: IEEE Transactions on Software Engineering, Vol. SE-2, No. 4 (same paper as above)
+quality: PEER-REVIEWED
+url: https://en.wikipedia.org/wiki/Essential_complexity
+keywords: essential complexity, unstructured code, CFG reduction, goto, spaghetti code, structured programming, irreducible graph
+cites: McCabe 1976
+cited_by: GNAT compiler metrics, static analysis tools for unstructuredness
+content:
+  DEFINITION: Essential complexity ev(G) = cyclomatic complexity of the reduced CFG
+    after iteratively removing ALL structured control structures (single-entry/
+    single-exit subgraphs) by replacing them with placeholder single nodes.
+  
+  REDUCTION RULE: If a subgraph has exactly one entry edge and one exit edge
+    (i.e., it is a "D-chart" or "structured" fragment), replace it with a
+    single node. Repeat until no more reductions are possible.
+    This is a graph transformation independent of program inputs.
+  
+  STRUCTURED CONTROL STRUCTURES THAT GET REDUCED:
+    - if-then-else (single entry, single exit)
+    - while loop (single entry, single exit)
+    - do-while loop
+    - for loop
+    - try-catch-finally blocks (if structured)
+  
+  RESULT INTERPRETATION:
+    ev(G) = 1: Program is fully structured; the entire CFG reduces to a single node.
+              All structured programs reduce to 1.
+    ev(G) > 1: Program contains irreducible subgraphs (unstructured code).
+              Higher values = more "spaghetti"; more goto/unstructured jumps.
+    ev(G) = ev_max (= V(G)): Completely unstructured; nothing reduces.
+  
+  WHAT HIGH ESSENTIAL COMPLEXITY SIGNALS:
+    Irreducible CFG subgraphs that survive reduction are the "tangled" portions.
+    These are program constructs (typically gotos, break-to-outer-loop,
+    multiple-exit loops) that CANNOT be replaced by structured equivalents
+    without adding boolean flags or duplicating code.
+    Essential complexity = 1 is the refactoring target.
+  
+  SIMPLIFICATION IMPLICATION FOR pflow:
+    ev(G) - 1 = number of unstructured "excess" control flows to eliminate.
+    Each reduction of ev(G) by 1 = one unstructured jump successfully structured.
+  
+  RELATIONSHIP TO V(G):
+    1 <= ev(G) <= V(G)
+    V(G) - ev(G) = complexity attributable to structured control (removable by
+                   decomposition into subroutines without loss of structure)
+    ev(G) captures the "residual" non-structurable complexity.
+  
+  PRIME DECOMPOSITION / INTERVAL ANALYSIS:
+    McCabe uses Cocke's interval analysis: decompose CFG into intervals
+    (maximal single-entry subgraphs). Iteratively replace each interval
+    with a single node to obtain the "derived sequence" of graphs.
+    If the derived sequence reduces to a single node: structured (ev=1).
+    If the process stalls (irreducible graph remains): ev(G) = V(G_irreducible).
+    T1: Remove self-loops; T2: Merge node with single predecessor into predecessor
+    (collapses sequential chains and structured constructs).
+    Primes = subgraphs that survive all possible T1-T2 reductions.
+    Each prime with k exits contributes (k-1) to essential complexity.
+  
+  EXAMPLE:
+    for-loop with inner if-statement: ev(G) = 1 (fully reducible, structured).
+    Loop with goto jumping outside the loop: ev(G) >= 2 (irreducible subgraph).
+    Program using goto to implement "find first zero row": ev(G) = 4 (example from wiki).
+  
+  ADA ESSENTIAL COMPLEXITY VARIANT:
+    Count V(G) only for code remaining after excluding pure-structural Ada
+    control statements. A compound statement is non-structural if it contains
+    a goto transferring control outside the operator.
+<<<END>>>
+
+SOURCE
+id: 3
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: Cognitive Complexity: A new way of measuring understandability
+authors: G. Ann Campbell
+year: 2018
+venue: SonarSource White Paper (ACM TechDebt 2018 conference paper companion)
+quality: INDUSTRY
+url: https://www.sonarsource.com/resources/cognitive-complexity/
+keywords: cognitive complexity, nesting increment, structural increment, hybrid increment, fundamental increment, boolean sequence, understandability, sonar
+cites: McCabe 1976
+cited_by: SonarQube S3776, CodeClimate, numerous IDE plugins
+content:
+  MOTIVATION: Cyclomatic complexity measures testability (path count) but
+    does not track human-perceived difficulty of understanding code.
+    Cognitive Complexity breaks from mathematical models to assess maintainability.
+    Key claim: a && b && c && d is not 4x harder than a && b; CC treats them equal.
+  
+  FOUR TYPES OF INCREMENTS:
+  
+  1. NESTING INCREMENT: Added for each level of nesting at the point of assessment.
+     Applied whenever a control flow structure is nested inside another.
+     Amount = current nesting depth at that point.
+     Example: if inside while inside if = nesting depth 3 at innermost structure.
+  
+  2. STRUCTURAL INCREMENT (+1 + nesting penalty):
+     Structures that both take the increment AND increase nesting count for children:
+       - for, while, do-while (loop structures)
+       - if, #if, #ifdef (conditional structures)
+       - ternary operator ? :
+     Each gets +1 structural increment PLUS nesting penalty based on current depth.
+     These structures increase the nesting counter for any structures inside them.
+  
+  3. HYBRID INCREMENT (+0 at their level but increase nesting for children):
+     Structures that do NOT get their own nesting penalty but still increase the
+     nesting count:
+       - else if, elif, else (no extra nesting increment for the else/elif itself,
+         since "the mental cost has already been paid when reading the if")
+       - catch, except (in some language mappings)
+     These still increase nesting depth for code inside them.
+  
+  4. FUNDAMENTAL INCREMENT (+1, no nesting penalty, do not increase nesting):
+     Structures that always add 1 regardless of nesting:
+       - break with label / goto label (jumps to non-obvious targets)
+       - sequences of binary logical operators: each SEQUENCE (not each operator)
+         adds +1. "a && b && c && d" = 1 increment (one sequence of &&).
+         "a || b && c || d" = 2 increments (two distinct operator types in sequence).
+       - recursion: a method calling itself directly or indirectly.
+  
+  EXCLUDED (NO INCREMENT):
+     - try and finally blocks
+     - null-coalescing operators (?? / ?: / Elvis operator)
+     - method declarations / function definitions themselves
+     - shorthand expressions that replace multi-line code
+  
+  SWITCH STATEMENT RULE:
+     switch/match/when combined = 1 structural increment for the whole switch.
+     Individual case branches do NOT each get an increment.
+     (This differs from cyclomatic complexity which counts each case.)
+  
+  NESTING RULES DETAIL:
+     Nesting counter increments at: if, for, while, do-while, ternary, switch,
+     try (in some implementations), lambda/closure/nested function definitions.
+     Counter resets at end of each structure.
+     else/elif: does NOT add to nesting count for siblings; DOES increase depth
+     for code nested inside the else block.
+  
+  EXAMPLE SCORES (from white paper):
+     sumOfPrimes (double nested loop + labeled break): cognitive = 4
+     getWords (switch + nested conditions): cyclomatic = 4, cognitive = 4
+     (illustrating cases where CC and Cognitive match or diverge)
+  
+  BOOLEAN SEQUENCE RULE DETAIL:
+     For "a && b || c && d": two sequences (&&-sequence, &&-sequence after ||) = +2
+     For "a && b && c": one sequence = +1
+     Mixed operators that do NOT form separate sequences collapse to fewer increments.
+  
+  COMPARISON TO CYCLOMATIC:
+     Cyclomatic: each binary logical operator in a condition = +1 (counts paths).
+     Cognitive: a sequence of same-type operators = +1 (counts cognitive groups).
+     Cyclomatic counts switch cases individually; Cognitive counts switch once.
+     Cyclomatic penalizes short-circuit expressions the same as nested loops;
+     Cognitive penalizes nesting more heavily than non-nested branches.
+  
+  DEFAULT SONAR THRESHOLD: 15 (rule S3776 across Java, C#, C++, Python, TypeScript)
+  SONAR RULE ID: S3776 ("Cognitive Complexity of functions should not be too high")
+<<<END>>>
+
+SOURCE
+id: 4
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: NPATH: A Measure of Execution Path Complexity and Its Applications
+authors: Brian A. Nejmeh
+year: 1988
+venue: Communications of the ACM, Vol. 31, No. 2, pp. 188-200 (Feb 1988)
+quality: PEER-REVIEWED
+url: https://www.semanticscholar.org/paper/NPATH:-a-measure-of-execution-path-complexity-and-Nejmeh/887c306420cbe4332526af7e62380e963751bfe4
+keywords: NPATH, execution path, acyclic paths, branch testing, test case generation
+cites: McCabe 1976
+cited_by: Checkstyle NPathComplexityCheck, PMD, numerous static analyzers
+content:
+  DEFINITION: NPATH = number of acyclic execution paths through a function/method.
+    "Acyclic" = no path traverses the same sequence of instructions twice.
+    Differs from McCabe: NPATH is multiplicative (combinatorial explosion),
+    McCabe is additive. NPATH grows exponentially with nested conditionals.
+  
+  COMPUTATION FORMULA BY STATEMENT TYPE:
+    (NP(X) = NPATH complexity of statement/block X)
+  
+    if statement (no else):
+      NP(if) = NP(if-range) + 1 + NP(expr)
+      (path through body + path skipping body + boolean paths in condition)
+  
+    if-else statement:
+      NP(if-else) = NP(if-range) + NP(else-range) + NP(expr)
+      (paths through then-branch + paths through else-branch + boolean paths)
+  
+    while loop:
+      NP(while) = NP(while-range) + NP(expr) + 1
+      (paths through body + boolean paths + path skipping loop entirely)
+  
+    do-while loop:
+      NP(do-while) = NP(do-range) + NP(expr) + 1
+  
+    for loop:
+      NP(for) = NP(for-range) + NP(expr1) + NP(expr2) + NP(expr3) + 1
+      (body paths + 3 expression boolean paths + skip-loop path)
+  
+    switch statement:
+      NP(switch) = sum(NP(case-range[i])) + NP(default-range) + NP(expr)
+  
+    ternary operator (expr1 ? expr2 : expr3):
+      NP(ternary) = NP(expr1) + NP(expr2) + NP(expr3) + 2
+  
+    Boolean expressions (within conditions):
+      NP(expr) = count of && and || operators (0 if no boolean operators)
+  
+    goto, break, continue, return:
+      NP = 1 each
+  
+    Function/method declaration:
+      NP(function) = product of NP(statement[i]) over all statements... 
+      Actually: NP(function) = sum of NP(statement[i]) for sequential statements
+      (sequential statements multiply paths; parallel branches add)
+  
+    Single statement / empty block / function call:
+      NP = 1
+  
+  KEY PROPERTY: For nested conditionals, NPATH is multiplicative.
+    Example: two nested if-else blocks = 2 * 2 = 4 (not 2+2=4 as in cyclomatic).
+    Three nested if-else blocks = 2 * 2 * 2 = 8 (vs 3+1=4 cyclomatic).
+    This captures the combinatorial explosion of test cases needed.
+  
+  THRESHOLD: Informal NPATH limit of 200 at AT&T Bell Labs.
+    Functions > 200 are candidates for decomposition.
+    Checkstyle default threshold: 200.
+  
+  RELATIONSHIP TO CYCLOMATIC:
+    Both measure control flow complexity but NPATH is more sensitive to nesting.
+    NPATH "designed to avoid problems like nesting level sensitivity" of cyclomatic.
+    NPATH explicitly counts boolean paths within conditions via NP(expr).
+  
+  PRACTICAL NOTE: NPATH can grow astronomically; even modest functions with
+    deeply nested conditions can exceed thousands. This is a signal of
+    untestability, not just complexity.
+<<<END>>>
+
+
+SOURCE
+id: 5
+ts: 2026-05-29T00:01:00Z
+relevance: HIGH
+title: Control Flow, Data Flow and Program Complexity
+authors: Enrique I. Oviedo
+year: 1980
+venue: Proceedings IEEE COMPSAC, Chicago, pp. 146-152
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/abs/10.5555/911473
+keywords: data flow complexity, def-use pairs, control flow complexity, program complexity, weighted sum
+cites: McCabe 1976, Halstead 1977
+cited_by: Beck/Beyer DepDegree, Weyuker evaluations of complexity metrics, Theoretical Approaches in Software Complexity Metrics
+content:
+  MOTIVATION: Review of published control-flow complexity measures reveals 
+    three deficiencies: (1) loss of information, (2) lack of specificity,
+    (3) lack of analytical support.
+  
+  OVIEDO'S COMPOSITE METRIC:
+    C(P) = w1 * CF(P) + w2 * DF(P)
+    where CF(P) = control flow complexity (e.g., V(G) or similar)
+          DF(P) = data flow complexity
+          w1, w2 = weighting constants (relative importance)
+  
+  DATA FLOW COMPLEXITY DF(P):
+    DF(P) = number of def-use associations (pairs) in the program P.
+    A def-use association (d, u) exists where d is a definition of variable x
+    and u is a subsequent use of x reachable from d without an intervening
+    definition of x on that path.
+    DF(P) = sum over all variables x of |{(d,u) : d defines x, u uses x,
+            path d->u with no intervening def of x}|
+  
+  EQUIVALENTLY: DF(P) = total number of reaching def-use pairs across all
+    variables and all definition and use points.
+  
+  INTERPRETATION: Higher DF means more data connections to track while reading
+    the program. Data flow complexity captures the "state holding" burden on
+    the reader that CF alone does not capture.
+  
+  NOTE: The exact formula is reconstructed from citations; original paper is
+    behind ACM paywall. Later works (e.g. Weyuker 1988, Beyer 2010) confirm
+    this formulation.
+<<<END>>>
+
+SOURCE
+id: 6
+ts: 2026-05-29T00:02:00Z
+relevance: HIGH
+title: A Simple and Effective Measure for Complex Low-Level Dependencies (DepDegree)
+authors: Dirk Beyer, Armaghan Fararooy
+year: 2010
+venue: Proceedings of ICPC (International Conference on Program Comprehension), pp. 80-83, IEEE
+quality: PEER-REVIEWED
+url: https://www.sosy-lab.org/research/DepDegreeProperties/
+keywords: DepDegree, data flow dependency, use-def graph, program comprehension, Weyuker properties
+cites: Oviedo 1980, Rapps-Weyuker 1985, Miller's 7+/-2 (psychological basis)
+cited_by: Beyer-Haring 2014 (Weyuker properties), Peitek 2021 fMRI study
+content:
+  DEFINITION:
+    Use-def graph S_G = (B, E) where:
+      B = set of program operations (statements/basic blocks)
+      E = set of dependency edges: (b_u, b_d) in E iff variable x is used in b_u
+          and b_d is a reaching definition of x at b_u (no redefinition between)
+    
+    DepDegree of operation b:
+      dd_G(b) = |{b' in B : (b, b') in E}|
+      = number of operations that provided definitions reaching b
+    
+    DepDegree of program (CFG G):
+      dd(G) = sum_{b in B} dd_G(b) = |E|
+      = total number of edges in the data-flow (use-def) graph
+  
+  PSYCHOLOGICAL BASIS:
+    Miller's Law: short-term memory limited to 7 +/- 2 chunks.
+    Programs where many statements depend on many prior definitions exceed
+    working-memory capacity. DepDegree quantifies the total dependency load.
+  
+  COMPUTATION FROM DEF-USE:
+    For each statement s that uses variable x:
+      rd_G(s, x) = set of statements that define x and reach s
+                 (standard reaching definitions computation from CFG)
+      dd_G(s) += |rd_G(s, x)| for each x used in s
+    Sum over all s: dd(G)
+  
+  WEYUKER PROPERTIES:
+    Beyer & Haring (2014, ICPC) formally proved DepDegree satisfies ALL
+    of Weyuker's 9 properties for complexity metrics (unlike V(G) which
+    fails some). This is a significant theoretical result.
+  
+  SIMPLIFICATION IMPLICATION:
+    High DepDegree statements = statements that depend on many prior definitions.
+    Reducing DepDegree by splitting a function or reducing variable scope
+    directly reduces the "memory load" a reader must hold.
+    Per-statement dd_G(b) pinpoints which exact statements are the dependency
+    hotspots -- these are the refactoring targets.
+  
+  NOTE ON NAMING: The user prompt attributes this to "Beck & Diehl 2011."
+    Actual authors are Beyer & Fararooy 2010 (ICPC). Beck/Diehl are separate
+    ICPC 2013 researchers. Possible confusion in attribution.
+<<<END>>>
+
+SOURCE
+id: 7
+ts: 2026-05-29T00:03:00Z
+relevance: HIGH
+title: A Formal Evaluation of DepDegree Based on Weyuker's Properties
+authors: Dirk Beyer, Max Haring
+year: 2014
+venue: Proceedings of 22nd ICPC (International Conference on Program Comprehension)
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/abs/10.1145/2597008.2597794
+keywords: DepDegree, Weyuker properties, data flow complexity, formal evaluation, software metrics
+cites: Beyer-Fararooy 2010, Weyuker 1988, Oviedo 1980
+cited_by: Enhancing Software Defect Prediction (Springer 2024)
+content:
+  PURPOSE: Formally verify DepDegree satisfies all 9 Weyuker properties,
+    establishing it as a theoretically sound complexity metric.
+  
+  WEYUKER'S NINE PROPERTIES (briefly):
+    1. Non-trivial: not all programs have the same complexity
+    2. Programs with different complexity exist
+    3. Two equivalent programs may differ in complexity
+    4. Renaming doesn't change complexity
+    5. Adding code doesn't decrease complexity (monotonicity)
+    6. Complexity of composite > max of parts
+    7. Order of statements matters
+    8. Nesting matters
+    9. Different programs can have same complexity
+  
+  RESULT: DepDegree satisfies all 9. McCabe's V(G) fails property 3 (two
+    programs with same control flow structure have same V(G) regardless of
+    data).
+  
+  SIGNIFICANCE FOR pflow: DepDegree is the only commonly used data-flow
+    complexity metric with a complete formal justification.
+  
+  REACHING DEFINITIONS:
+    rd_G: B x Var -> P(B)  (program operation, variable) -> set of definitions
+    Formally: rd_G(b, x) = {b' in B : b' assigns x, there exists path b'->b
+              in CFG with no intermediate assignment to x}
+<<<END>>>
+
+SOURCE
+id: 8
+ts: 2026-05-29T00:04:00Z
+relevance: HIGH
+title: Variable Span / Live Range as Complexity Metric
+authors: (attributed to Elshoff 1976, Oviedo 1980, Harrison & Magel 1981)
+year: 1976
+venue: Various; concept synthesized across multiple papers
+quality: PEER-REVIEWED
+url: https://www.geeksforgeeks.org/dsa/complexity-metrics/
+keywords: variable span, live range, average span, def-use distance, state holding, program comprehension
+cites: Elshoff 1976, Harrison-Magel 1981
+cited_by: Numerous complexity surveys, program comprehension studies
+content:
+  DEFINITION - SPAN:
+    For a variable x referenced at N distinct points in a module,
+    there are (N-1) spans for x.
+    Span_i(x) = number of executable statements between successive references i
+                and i+1 of x.
+    Average span of x: avg_span(x) = (1/(N-1)) * sum_{i=1}^{N-1} Span_i(x)
+    
+    Module-level metric: average over all variables of their average span.
+  
+  DEFINITION - LIVE RANGE:
+    Live range of variable x at statement s: x is "live" at s if there exists
+    a path from s to a use of x without an intervening definition of x.
+    Live range = set of statements where x is live = [def, last-use] interval.
+    
+    Live range length for x across definition d to last use u:
+      LR(x,d,u) = number of statements between d and u (inclusive).
+    
+    Total live range complexity: sum over all definitions d of all variables
+      of LR(x,d,last_use_of_x_from_d).
+  
+  INTERPRETATION:
+    Large span = reader must remember a variable's value across many intervening
+    statements. "The larger the span, the more complex the module."
+    Live range overlap = number of simultaneously live variables = register
+    pressure = cognitive load of tracking live state simultaneously.
+  
+  SIMPLIFICATION IMPLICATION FOR pflow:
+    Long live ranges flag variables whose scope should be narrowed.
+    High span between def and last use = opportunity to move definition closer
+    to its use, or split the function.
+    Simultaneously live variables (live range interference graph density) =
+    "how much state must the reader hold at once."
+  
+  LIVE-RANGE COMPLEXITY FORMULA (Harrison/Oviedo variant):
+    LV(P) = sum over all variables x of |live_range(x)|
+             where |live_range(x)| = number of statements in the live range of x
+    Normalized: LV_avg = LV(P) / (num_statements * num_variables)
+  
+  NOTE: The exact original attribution is unclear; several 1976-1982 papers
+    define variants. Span = statements between successive uses; live range =
+    statements between def and last use. These are related but distinct.
+<<<END>>>
+
+SOURCE
+id: 9
+ts: 2026-05-29T00:05:00Z
+relevance: HIGH
+title: A Measure of Control Flow Complexity in Program Text (Knots)
+authors: M.R. Woodward, M.A. Hennell, D. Hedley
+year: 1979
+venue: IEEE Transactions on Software Engineering, Vol. SE-5, No. 1, pp. 45-50
+quality: PEER-REVIEWED
+url: https://ieeexplore.ieee.org/document/1702586/
+keywords: knots, control flow complexity, edge crossings, unstructured code, linearized program, program text
+cites:
+cited_by: Various software complexity surveys
+content:
+  DEFINITION - KNOTS:
+    A "knot" is a pair of control flow jumps (arcs in the linearized program text)
+    that cross each other when the program is laid out linearly (textually).
+    
+    Formally: Given the linear ordering of statements s_1, s_2, ..., s_n,
+    a pair of jumps (s_i -> s_j) and (s_k -> s_l) forms a knot if:
+      i < k < j < l  OR  k < i < l < j
+      (the intervals [i,j] and [k,l] overlap but neither contains the other)
+    
+    Knot count = number of such crossing pairs in the linearized text.
+  
+  INTERPRETATION:
+    Knots = 0: Program is fully structured (or at least planar in linear layout).
+    Knots > 0: Program has interleaved/crossed control transfers = unstructured.
+    Each knot = one "tangling" where two control paths cross in textual order.
+  
+  RELATIONSHIP TO ESSENTIAL COMPLEXITY:
+    Knots measure unstructuredness independently of McCabe's reduction method.
+    Both target the same phenomenon (unstructured/goto code) from different angles.
+    Knots are purely textual; essential complexity is graph-theoretic.
+    A program with many gotos will have high knot count AND high essential complexity.
+  
+  DISTINCTION FROM CYCLOMATIC:
+    Cyclomatic V(G) = E - N + 2: measures branching density, not structure.
+    A structured program with many if-else branches has high V(G) but 0 knots.
+    Knots specifically measure non-structured transfers, not branching per se.
+  
+  COMPUTATION:
+    1. Linearize the program text (label statements 1..n).
+    2. Extract all control flow arcs (source, target) where source != target-1
+       (i.e., non-fall-through arcs: gotos, conditional jumps, loop back-edges).
+    3. Count pairs of arcs (i->j, k->l) where i<k<j<l (standard interval overlap).
+    Time complexity: O(m^2) where m = number of non-fall-through arcs.
+  
+  NOTE: Authors are Woodward, Hennell, Hedley (not Duran — Duran is a different
+    author associated with structural testing). Confirmed by IEEE Xplore record
+    and multiple citation records.
+<<<END>>>
+
+SOURCE
+id: 10
+ts: 2026-05-29T00:06:00Z
+relevance: HIGH
+title: Halstead Complexity Measures (Elements of Software Science)
+authors: Maurice H. Halstead
+year: 1977
+venue: Elsevier North-Holland (book), "Elements of Software Science"
+quality: PEER-REVIEWED
+url: https://en.wikipedia.org/wiki/Halstead_complexity_measures
+keywords: Halstead, volume, difficulty, effort, operators, operands, vocabulary, software science
+cites:
+cited_by: McCabe 1976 comparisons, numerous surveys, Verifysoft, SciTools
+content:
+  BASE COUNTS:
+    n1 = number of distinct operators
+    n2 = number of distinct operands
+    N1 = total occurrences of operators
+    N2 = total occurrences of operands
+  
+  DERIVED METRICS:
+    Program Length:    N = N1 + N2
+    Vocabulary Size:   n = n1 + n2
+    Estimated Length:  N_hat = n1*log2(n1) + n2*log2(n2)
+    
+    Volume:     V = N * log2(n)
+      Represents information content (mathematical bits).
+      Recommended range: 20-1000 per function; 100-8000 per file.
+    
+    Difficulty: D = (n1/2) * (N2/n2)
+      Measures error-proneness; proportional to unique operators
+      and operand reuse rate.
+    
+    Level:      L = 1/D
+      Inverse of difficulty; lower L = higher error risk.
+    
+    Effort:     E = V * D = V/L
+      Cognitive effort to implement or understand; unit = elementary
+      mental discriminations.
+    
+    Time:       T = E / 18   (seconds)
+      Empirical constant 18 = Stroud number (elementary mental 
+      discriminations per second for human cognition).
+    
+    Delivered Bugs: B = E^(2/3) / 3000
+      Alternate formula: B = V / 3000
+      Files should contain < 2 estimated bugs.
+    
+    Language Level: L_hat = V / (D * V_hat)
+      Higher = higher-level language; more concise expression.
+  
+  OPERATORS vs OPERANDS (definition):
+    Operators: reserved words (if, while, for, +, *, =, etc.), punctuation (;, ,)
+    Operands: variable names, literal constants, labels
+    Note: Definitions vary by language and tool implementation.
+  
+  LIMITATION FOR pflow:
+    Halstead metrics are lexical, not structural. They do not use CFG, def-use,
+    or dominators. They capture vocabulary/size complexity, not flow complexity.
+    Included here for completeness; less actionable for flow-based refactoring.
+<<<END>>>
+
+
+SOURCE
+id: 11
+ts: 2026-05-29T00:07:00Z
+relevance: HIGH
+title: Cognitive Complexity Scoring Algorithm (precise specification)
+authors: G. Ann Campbell / SonarSource; algorithm reconstruction from multiple sources
+year: 2018
+venue: SonarSource, various implementations (sonar-java, complexipy, etc.)
+quality: INDUSTRY
+url: https://blog.scitools.com/cognitive-complexity-metric-plugin/
+keywords: cognitive complexity, nesting increment, structural increment, exact algorithm, sumOfPrimes example
+cites: Campbell 2018 white paper
+cited_by: SonarQube, complexipy, flake8-cognitive-complexity, many IDE plugins
+content:
+  ALGORITHM (reconstructed from multiple sources):
+  
+  STATE: nesting_depth = 0 (tracks current structural nesting level)
+  
+  FOR EACH CONSTRUCT in program text:
+  
+  STRUCTURAL INCREMENTS (add 1 + nesting_depth; THEN increment nesting_depth):
+    - if
+    - ternary operator (? :)
+    - for / foreach
+    - while
+    - do-while
+    - switch (entire block = 1 increment, NOT per case)
+    - catch / except / rescue
+    INCREMENT = 1 + nesting_depth
+    AFTER: nesting_depth += 1 (for children inside this construct)
+    AT END OF CONSTRUCT: nesting_depth -= 1
+  
+  HYBRID INCREMENTS (add 1; THEN increment nesting_depth; but NO nesting penalty):
+    - else if / elif / elsif
+    - else
+    INCREMENT = 1 (no + nesting_depth)
+    AFTER: nesting_depth += 1 (code inside else/elif still deeper)
+    AT END: nesting_depth -= 1
+  
+  FUNDAMENTAL INCREMENTS (add 1; DO NOT change nesting_depth):
+    - goto <label>  (unconditional jump to non-obvious target)
+    - break <label> / continue <label>  (labeled jump)
+    - recursion (direct or mutual; one +1 per recursive call)
+    - binary logical operator SEQUENCE:
+        Each SEQUENCE of SAME-TYPE operators = +1
+        e.g.: "a && b && c" = 1 (one && sequence)
+              "a || b && c" = 2 (one || sequence, one && sequence)
+              "a && b || c && d" = 2 (same)
+        NOTE: Each contiguous run of same logical operator type = 1 increment.
+              Switching operator type starts a new sequence (+1 more).
+  
+  NO INCREMENT (zero contribution):
+    - try / finally / else-on-try blocks
+    - null-coalescing (??, ?: Elvis operator)
+    - method/function declaration
+    - class declaration
+    - standard method calls
+    - comprehensions (in most implementations)
+    - import statements
+  
+  WORKED EXAMPLE: sumOfPrimes(int max)
+    Code:
+      int total = 0;
+      OUT: for (int i = 1; i <= max; ++i) {   // FOR: +1+0=+1, nesting->1
+        for (int j = 2; j < i; ++j) {          // FOR: +1+1=+2, nesting->2
+          if (i % j == 0)                      // IF: +1+2=+3, nesting->3
+            continue OUT;                      // labeled continue: +1
+        }                                       // nesting->2
+      }                                         // nesting->1 after inner for; ->0 after outer
+      return total;
+    TOTAL: 1 + 2 + 3 + 1 = 7
+  
+  WORKED EXAMPLE: getWords(int number)
+    Code:
+      switch (number) {              // SWITCH: +1+0=+1, nesting->1
+        case 1: return "one";        // no increment (case in switch)
+        case 2: return "a couple";   // no increment
+        default: return "lots";      // no increment
+      }                              // nesting->0
+    TOTAL: 1
+    Cyclomatic complexity: 4 (counts each case separately)
+    
+  COMPARISON TABLE: sumOfPrimes
+    Cyclomatic = 4 (2 for-loops + 1 if = 3 decisions + 1)
+    Cognitive  = 7 (nesting penalties reveal deeper complexity)
+  
+  SONAR RULE: S3776, default threshold = 15 (configurable)
+  LANGUAGES: Java, C#, C++, Python, TypeScript, JavaScript, Go, Ruby, etc.
+<<<END>>>
+
+SOURCE
+id: 12
+ts: 2026-05-29T00:08:00Z
+relevance: HIGH
+title: Nesting Depth / Maximum Nesting Level as Complexity Metric
+authors: Multiple (Harrison & Magel 1981; Nesting as independent metric in tools)
+year: 1981
+venue: ACM SIGPLAN Notices, Vol. 16, No. 3, pp. 63-74 (Harrison & Magel original)
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1145/947825.947829
+keywords: nesting depth, nesting level, conditional nesting, loop nesting, DCOND, DLOOP, indentation depth
+cites: McCabe 1976
+cited_by: ABAP code-pal, SAP tools, ESLint max-depth, CodeScene nesting_depth_warning
+content:
+  DEFINITION:
+    Nesting depth at statement s = number of currently open control structures
+    that contain s. Corresponds to indentation level in well-formatted code.
+    
+    Max nesting depth of function = max over all statements of nesting depth.
+    
+  HARRISON-MAGEL 1981 METRIC:
+    Weighted nesting complexity = sum over all statements s of (depth(s))
+    where depth(s) = nesting level of s (1-indexed from function body).
+    (Weights deeper statements more heavily to penalize deep nesting.)
+  
+  VARIANT METRICS:
+    DCOND = max depth of conditional (if/switch) nesting across all branches.
+           Recommended maximum: 5 (various style guides).
+    DLOOP = max depth of loop nesting.
+           Recommended maximum: 2 loops per procedure.
+    
+  THRESHOLDS IN TOOLS:
+    ESLint max-depth rule: configurable, default not fixed; commonly 4.
+    SAP ABAP code-pal: threshold = 5 (max nesting depth within modularization unit).
+    CodeScene function_nesting_depth_warning: configurable, example default = 3.
+    Cognitive Complexity: nesting depth is built-in penalty (not a separate metric).
+    MathWorks Polyspace: "Depth of call nesting exceeds threshold" inspector.
+  
+  SIMPLIFICATION IMPLICATION FOR pflow:
+    Each level of nesting that can be removed (early return, extract method,
+    invert condition) reduces max_nesting_depth and all weighted nesting metrics.
+    "Guard clause" pattern: replace if (cond) { body } with if (!cond) return;
+    reduces nesting by 1 for entire body.
+<<<END>>>
+
+SOURCE
+id: 13
+ts: 2026-05-29T00:09:00Z
+relevance: HIGH
+title: Program Dependence Graph and Its Use in Optimization (PDG)
+authors: Jeanne Ferrante, Karl J. Ottenstein, Joe D. Warren
+year: 1987
+venue: ACM Transactions on Programming Languages and Systems (TOPLAS), Vol. 9, pp. 319-349
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1145/24039.24041
+keywords: program dependence graph, PDG, control dependence, data dependence, post-dominator, CFG, slicing
+cites: Ottenstein & Ottenstein 1984 (PDG in dev environment)
+cited_by: DepDegree, program slicing, virtually all PDG-based analysis work
+content:
+  PROGRAM DEPENDENCE GRAPH (PDG) DEFINITION:
+    Directed graph G_P = (V, E) where:
+      V = vertices = one per statement/predicate + region vertices (ENTRY, etc.)
+      E = edges of two types:
+        (1) Data dependence edges: (s, t) if s defines variable x, t uses x,
+            and there exists a def-use path s->t in CFG with no intervening def of x.
+        (2) Control dependence edges: (p, s) if predicate p controls whether s executes.
+    
+    Combined: edges make explicit both data flow and control flow for each operation.
+  
+  CONTROL DEPENDENCE CONSTRUCTION:
+    Statement y is control-dependent on predicate x iff:
+      (a) there exists a CFG path from x to y on which y post-dominates every node
+          after x on the path, AND
+      (b) x does not post-dominate y.
+    
+    Equivalently: y is in the post-dominator frontier of x in the reverse CFG.
+    
+    Algorithm:
+      1. Compute post-dominator tree of CFG (using Lengauer-Tarjan, O(N log N)).
+      2. For each edge (x, y) in CFG where y does NOT post-dominate x:
+         Walk up post-dominator tree from y to (but not including) the LCA of x
+         in the post-dominator tree; all nodes on this walk are control-dependent on x.
+  
+  DATA DEPENDENCE CONSTRUCTION:
+    Standard reaching definitions / def-use chains.
+    (s, t) is a data dependence edge iff s defines x, t uses x,
+    and s is in reaching_defs(t, x).
+  
+  RELEVANCE FOR pflow:
+    Control dependence graph CDs = post-dominator frontier.
+    A statement with many control dependents = a branching point controlling
+    many other statements = candidate for simplification (reduce scope of predicate).
+    Data dependence slice at statement s = all statements that must execute before s
+    to produce correct value = the "closure" of s under backward data deps.
+    Slice size = complexity of the "what must be tracked" metric.
+  
+  METRICS DERIVABLE FROM PDG:
+    - Fan-in of data deps per statement = DepDegree of that statement.
+    - Control dependence height = depth in CDS = nesting complexity.
+    - PDG "width" at a control node = number of statements it controls = scope of a branch.
+    - Dense PDG = high coupling between statements = hard to simplify without side effects.
+<<<END>>>
+
+SOURCE
+id: 14
+ts: 2026-05-29T00:10:00Z
+relevance: HIGH
+title: SonarQube Complexity Rules: S3776 (Cognitive) and S1541 (Cyclomatic)
+authors: SonarSource
+year: 2018
+venue: SonarQube Rule Documentation
+quality: INDUSTRY
+url: https://next.sonarqube.com/sonarqube/coding_rules?open=java%3AS3776&rule_key=java%3AS3776
+keywords: SonarQube, S3776, S1541, cognitive complexity, cyclomatic complexity, code smell, threshold 15
+cites: Campbell 2018
+cited_by: Numerous SonarQube deployments
+content:
+  RULE S3776 - Cognitive Complexity of functions should not be too high:
+    Type: Code Smell (Maintainability)
+    Default threshold: 15
+    Languages: Java (java:S3776), C# (csharpsquid:S3776), C++ (cpp:S3776),
+               Python (python:S3776), TypeScript (typescript:S3776), etc.
+    What triggers: cognitive complexity of any function > threshold
+    Increments: loop structures, conditionals, catches, switches, jumps to labels,
+                conditions mixing multiple operators, each nesting level.
+    Configurable: Yes, threshold adjustable in Quality Profile.
+    
+  RULE S1541 - Cyclomatic Complexity of functions should not be too high:
+    Type: Code Smell
+    Default threshold: varies by language (10 in some, 20 in others)
+    Languages: Java, C, C++, others
+    What triggers: V(G) > threshold for a function
+    Note: S3776 is PREFERRED over S1541 by SonarSource for maintainability assessment.
+  
+  CYCLOMATIC COMPLEXITY THRESHOLDS USED BY SONAR:
+    Rule fires at V(G) > 20 (Quality Gate warning) in some configurations.
+    Individual function: V(G) > 10 is commonly the code-smell threshold.
+  
+  REFACTORING GUIDANCE:
+    SonarQube suggests splitting functions, using early returns (guard clauses),
+    extracting complex conditions into named boolean variables or methods.
+  
+  EFFORT-TO-FIX: Not specified in S3776 by default.
+    GitHub issue requesting effort formula was open as of ~2018.
+<<<END>>>
+
+SOURCE
+id: 15
+ts: 2026-05-29T00:11:00Z
+relevance: HIGH
+title: CodeScene Code Health Metrics and Thresholds
+authors: Adam Tornhill / CodeScene AB
+year: 2020
+venue: CodeScene Enterprise Documentation
+quality: INDUSTRY
+url: https://docs.enterprise.codescene.io/latest/guides/technical/code-health.html
+keywords: CodeScene, Brain Method, God Class, hotspot, cyclomatic complexity, nesting depth, code health, code smells
+cites: McCabe cyclomatic complexity, Cognitive complexity (Campbell)
+cited_by:
+content:
+  BRAIN METHOD / GOD FUNCTION definition:
+    A complex function that centralizes behavior and becomes a local hotspot.
+    COMPOUND RULE: requires ALL of:
+      (a) Lines of code > threshold (function is large)
+      (b) Cyclomatic complexity > threshold
+      (c) Deeply nested logic (nesting depth > threshold)
+      (d) Centrality: the function is called/referenced by many other parts
+    Config key: function_cyclomatic_complexity_warning (example default: 12)
+                function_nesting_depth_warning (example default: 3)
+  
+  BRAIN CLASS / GOD CLASS:
+    A module meeting all of:
+      (a) Many lines of code
+      (b) Many functions
+      (c) Contains at least one Brain Method
+  
+  COMPLEX METHOD:
+    High cyclomatic complexity from conditionals.
+    Threshold: configurable. Example: 10 warning.
+  
+  NESTED COMPLEXITY:
+    if-statements inside other if-statements and/or loops.
+    Separate from cyclomatic complexity; targets structural depth.
+  
+  BUMPY ROAD:
+    Multiple dispersed "humps" of indented code within a function —
+    function has several loosely related logical sub-blocks separated
+    by flat code. Each "hump" = a distinct responsibility cluster.
+    Detected by: counting transitions from low-nesting to high-nesting
+    regions within the function body.
+  
+  COMPLEX CONDITIONAL:
+    Multiple AND/OR operators in a single branch expression.
+  
+  CODE HEALTH SCORE:
+    Functions are scored 1-10 (10 = excellent). Score is a composite.
+    Files with more lines get more weight in aggregate health calculation.
+    Alert triggered when health declines by >= 0.1 points.
+  
+  CONFIGURATION FILE: .codescene/code-health-rules.json
+    Example override:
+      { "thresholds": { "function_cyclomatic_complexity_warning": 15,
+                        "function_nesting_depth_warning": 4 } }
+<<<END>>>
+
+SOURCE
+id: 16
+ts: 2026-05-29T00:12:00Z
+relevance: HIGH
+title: CodeClimate / Qlty Complexity Defaults and Configuration
+authors: Code Climate / Qlty
+year: 2023
+venue: CodeClimate Documentation (now Qlty)
+quality: INDUSTRY
+url: https://docs.codeclimate.com/docs/cognitive-complexity
+keywords: CodeClimate, Qlty, cognitive complexity, method complexity, nested control flow, default thresholds
+cites: Campbell 2018
+cited_by:
+content:
+  DEFAULT MAINTAINABILITY CHECKS (from CodeClimate defaults):
+    method-complexity:     threshold = 5    (cognitive complexity algorithm)
+    method-lines:          threshold = 25   (lines per function)
+    file-lines:            threshold = 250  (lines per file)
+    argument-count:        threshold = 4    (parameters per function)
+    complex-logic:         threshold = 4    (boolean operators in condition)
+    method-count:          threshold = 20   (methods per class)
+    nested-control-flow:   threshold = 4    (nesting depth)
+    return-statements:     threshold = 4    (return statements per function)
+  
+  METHOD COMPLEXITY ALGORITHM:
+    Uses cognitive complexity: "combines information about the size, control flow
+    and complexity of a functional unit to estimate how difficult it would be for
+    a human engineer to understand."
+  
+  CYCLOMATIC COMPLEXITY:
+    Also tracked. Issues when function exceeds threshold (commonly 10 or 15).
+  
+  REDIRECT NOTE: docs.codeclimate.com/docs/cognitive-complexity now redirects to
+    docs.qlty.sh (CodeClimate became Qlty).
+<<<END>>>
+
+SOURCE
+id: 17
+ts: 2026-05-29T00:13:00Z
+relevance: HIGH
+title: JetBrains Inspectopedia Complexity Inspections
+authors: JetBrains
+year: 2025
+venue: IntelliJ IDEA / Inspectopedia Documentation
+quality: INDUSTRY
+url: https://www.jetbrains.com/help/inspectopedia/CyclomaticComplexityInspection.html
+keywords: JetBrains, IntelliJ, cyclomatic complexity, overly complex class, inspection, threshold 10, threshold 80
+cites: McCabe 1976
+cited_by:
+content:
+  CYCLOMATIC COMPLEXITY INSPECTION:
+    Name: CyclomaticComplexityInspection
+    Bundled with IntelliJ IDEA, CLion, GoLand, PhpStorm, WebStorm, Qodana
+    Default threshold: 10 (per method)
+    Suppression: //noinspection CyclomaticComplexityInspection
+  
+  OVERLY COMPLEX METHOD (GroovyOverlyComplexMethod):
+    Default threshold: 10 per method
+    Suppression: //noinspection GroovyOverlyComplexMethod
+  
+  OVERLY COMPLEX CLASS:
+    Name: OverlyComplexClass (ClassComplexity)
+    Calculates sum of cyclomatic complexities of all methods in class
+    (excluding inherited methods).
+    Default threshold: 80
+    Option: m_limit (cyclomatic complexity limit) = 80 default
+    Suppression: //noinspection OverlyComplexClass
+  
+  PHP COMPLEX FUNCTION INSPECTION:
+    Name: PhpComplexFunctionInspection
+    References "complex function should be refactored."
+  
+  CA1502 (ReSharper/Roslyn):
+    Name: RoslynAnalyzers Avoid excessive complexity
+    Microsoft code analysis rule for cyclomatic complexity.
+  
+  PRACTICAL THRESHOLDS (from multiple sources):
+    Target V(G) < 6 for low-risk functions.
+    Warning at V(G) > 10 (time to simplify).
+    Error/critical at V(G) > 20 (high risk, likely untestable).
+    Class-level aggregate: > 80 indicates God Class pattern.
+<<<END>>>
+
+SOURCE
+id: 18
+ts: 2026-05-29T00:14:00Z
+relevance: HIGH
+title: Radon: Python Code Metrics Tool (CC, Halstead, Maintainability Index)
+authors: Michele Lacchia (rubik)
+year: 2014
+venue: PyPI / GitHub: rubik/radon
+quality: CODE
+url: https://radon.readthedocs.io/en/latest/intro.html
+keywords: radon, cyclomatic complexity, Halstead, maintainability index, Python, AST visitor
+cites: McCabe 1976, Halstead 1977, SEI Maintainability Index formula
+cited_by: Various Python complexity analysis pipelines
+content:
+  CYCLOMATIC COMPLEXITY (radon implementation):
+    Formula: V(G) = decisions + 1
+    Counted structures (each +1 unless noted):
+      if, elif (+1 each), else (+0), for (+1), while (+1),
+      except (+1), finally (+0), with (+1), assert (+1),
+      comprehensions (+1), boolean operators: and/or (+1 each)
+    Implementation: AST visitor (ComplexityVisitor class)
+    File: radon/visitors.py, radon/complexity.py
+    
+  RANK SCALE FOR CYCLOMATIC COMPLEXITY:
+    A: 1-5   (low risk — simple block)
+    B: 6-10  (low risk — well structured and stable block)
+    C: 11-15 (moderate risk — slightly complex block)
+    D: 16-20 (more than moderate risk — more complex block)
+    E: 21-25 (high risk — complex block, alarming)
+    F: 26+   (very high risk — error-prone, unstable block)
+  
+  HALSTEAD METRICS (radon/metrics.py, exact code):
+    h = h1 + h2           # vocabulary (η = η1 + η2)
+    N = N1 + N2           # length
+    length_hat = h1*log2(h1) + h2*log2(h2)  # estimated length
+    volume = N * log2(h)  # V
+    difficulty = (h1 * N2) / (2.0 * h2)  # D
+    effort = difficulty * volume           # E
+    time = effort / 18.0                   # T (seconds)
+    bugs = volume / 3000.0                 # B
+  
+  MAINTAINABILITY INDEX (radon/metrics.py, exact code):
+    MI = max(0, (171 - 5.2*ln(V) - 0.23*G - 16.2*ln(L) + 50*sin(sqrt(2.46 * radians(C)))) * 100 / 171)
+    V = Halstead volume
+    G = total cyclomatic complexity
+    L = SLOC (source lines of code)
+    C = percent comment lines (as percentage 0-100)
+    RANK: A (score > 19), B (9 < score <= 19), C (score <= 9)
+    NOTE: "Very experimental metric." MI from original SEI paper (Coleman et al. 1994).
+<<<END>>>
+
+SOURCE
+id: 19
+ts: 2026-05-29T00:15:00Z
+relevance: MED
+title: Structured Testing: A Software Testing Methodology Using the Cyclomatic Complexity Metric
+authors: Arthur H. Watson, T.J. McCabe (NIST)
+year: 1996
+venue: NIST Special Publication 500-235
+quality: INDUSTRY
+url: https://www.mccabe.com/pdf/mccabe-nist235r.pdf
+keywords: structured testing, cyclomatic complexity, basis path testing, NIST, McCabe, threshold, essential complexity
+cites: McCabe 1976
+cited_by: FAA, NASA, MISRA, numerous safety-critical standards
+content:
+  THRESHOLDS (from NIST 500-235):
+    10-15: Typical range for significant majority of functions.
+    V(G) > 10: Functions warrant scrutiny and simplification.
+    
+  MISRA RECOMMENDATION: Maximum V(G) = 15 for safety-critical software.
+  FAA: Recommends using cyclomatic complexity for measuring and reducing complexity.
+  NASA: Recommends cyclomatic complexity metrics for modular design.
+  
+  BAD FIX PROBABILITY (from RIAC/DoD data cited in various sources):
+    V(G) 1-10:   5% bad fix probability (per Walsh 1979 embedded systems data)
+    V(G) 20-30:  20% bad fix probability
+    V(G) > 50:   Cannot be tested
+    V(G) > 75:   "Every change may trigger a bad fix"
+  
+  STRUCTURED TESTING METHODOLOGY:
+    Uses V(G) to determine minimum test cases: need V(G) tests to achieve
+    full branch coverage. Essential complexity ev(G) indicates whether
+    the test cases can be reduced by refactoring unstructured code.
+<<<END>>>
+
+SOURCE
+id: 20
+ts: 2026-05-29T00:16:00Z
+relevance: HIGH
+title: Lizard: Extensible Cyclomatic Complexity Analyzer
+authors: Terry Yin (terryyin)
+year: 2019
+venue: GitHub: terryyin/lizard; PyPI; ASCL 1906.011
+quality: CODE
+url: https://github.com/terryyin/lizard
+keywords: Lizard, cyclomatic complexity, cognitive complexity, multi-language, token count, NLOC
+cites: McCabe 1976
+cited_by: Codacy, various CI pipelines
+content:
+  METRICS COMPUTED:
+    - NLOC: Non-comment lines of code per function
+    - CCN: Cyclomatic Complexity Number
+    - Token count per function
+    - Parameter count per function
+  
+  CCN COMPUTATION:
+    "Mostly compatible with McCabe's theory" with exception:
+    switch/case: counted by NUMBER OF CASES, not by switch block.
+    Each case branch = +1 (unlike SonarSource cognitive complexity which
+    counts the switch block as 1).
+    Boolean operators: and, or each +1.
+    
+  DEFAULT THRESHOLD: 15 (configurable via -C flag)
+    Functions exceeding threshold generate warnings.
+    Exit code non-zero if any warnings.
+  
+  COGNITIVE COMPLEXITY:
+    Supported as an extension.
+    Suppression: #lizard forgives comment in source.
+  
+  LANGUAGES: Java, C/C++, C#, JavaScript, TypeScript, Python, Ruby, Swift,
+             Scala, GDScript, Go, PHP, Rust, Lua, Kotlin, and more.
+  
+  NESTED STRUCTURE EXTENSION: -ENS flag counts nested control structures separately.
+<<<END>>>
+
+
+SOURCE
+id: 21
+ts: 2026-05-29T00:17:00Z
+relevance: HIGH
+title: gnatmetric Ada Essential Complexity (Modified McCabe for Ada)
+authors: AdaCore / GCC project
+year: 2013
+venue: GNAT User's Guide, GCC 4.8+; GNAT SAS gnatmetric documentation
+quality: DOCS
+url: https://gcc.gnu.org/onlinedocs/gcc-4.8.4/gnat_ugn/Complexity-Metrics-Control.html
+keywords: gnatmetric, essential complexity, Ada, non-structural, goto, raise, return, cyclomatic
+cites: McCabe 1976
+cited_by:
+content:
+  GNAT METRICS COMPUTED:
+    1. McCabe cyclomatic complexity (statement + expression complexity)
+    2. McCabe essential complexity (Ada-modified)
+    3. Maximal loop nesting level
+    4. Extra exit points (return/raise counts)
+  
+  CYCLOMATIC COMPLEXITY:
+    Three values computed per subprogram body:
+      (a) Statement complexity: control statements only
+          (if, loop, case, select, exception handlers)
+      (b) Expression complexity: short-circuit forms only
+          (and then, or else, and also Ada 2012 quantified/conditional exprs)
+      (c) Total = (a) + (b)
+    Option: --no-static-loop excludes static loops from count.
+  
+  ADA ESSENTIAL COMPLEXITY (modified McCabe):
+    Removes "pure structural" control statements from graph, then computes V(G).
+    NON-STRUCTURAL (NOT removed; contribute to essential complexity):
+      - raise statement as subcomponent of compound statement
+      - return statement as subcomponent of compound statement
+      - goto statement transferring control OUTSIDE the compound statement
+      - selective accept with terminate alternative
+      - exit statements (default; treated as goto; override: --no-treat-exit-as-goto)
+    
+    KEY DIFFERENCE FROM MCCABE: Short-circuit forms (and then, or else)
+    are NOT penalized as unstructured in the Ada variant.
+    
+    INTERPRETATION: If essential complexity > 1, the body contains unstructured
+    control flow (gotos, early returns from compound statements, raises).
+  
+  LOOP NESTING LEVEL: Maximum depth of nested loop structures.
+    Corresponds to max nesting depth restricted to loops only.
+  
+  EXTRA EXIT POINTS:
+    count(return statements) + count(unhandled raise statements) - 1
+    (for functions; the -1 accounts for the required final return)
+<<<END>>>
+
+SOURCE
+id: 22
+ts: 2026-05-29T00:18:00Z
+relevance: MED
+title: Maintainability Index (Coleman / Oman / SEI)
+authors: Don Coleman, Dan Ash, Bruce Lowther, Paul Oman (original 1994)
+year: 1994
+venue: IEEE Computer, Vol. 27 No. 8 (original); SEI 1997 C4 Software Technology Reference Guide
+quality: PEER-REVIEWED
+url: https://avandeursen.com/2014/08/29/think-twice-before-using-the-maintainability-index/
+keywords: maintainability index, MI, Halstead, cyclomatic complexity, SLOC, composite metric, Visual Studio
+cites: Halstead 1977, McCabe 1976, Oman-Hagemeister 1992
+cited_by: Radon, Visual Studio, many composite scoring tools
+content:
+  ORIGINAL FORMULA (Coleman 1994):
+    MI = 171 - 5.2 * ln(V) - 0.23 * G - 16.2 * ln(L)
+    V = Halstead Volume
+    G = total cyclomatic complexity
+    L = SLOC (source lines of code)
+    Range: unbounded below, up to 171
+    Higher = more maintainable
+  
+  VISUAL STUDIO ADAPTATION:
+    MI = max(0, (171 - 5.2*ln(V) - 0.23*G - 16.2*ln(L)) * 100 / 171)
+    Range: 0 to 100
+    Visual Studio color coding:
+      Green (20-100): maintainable
+      Yellow (10-19): moderate
+      Red (0-9): hard to maintain
+  
+  RADON VARIANT (adds comment percentage):
+    MI = max(0, (171 - 5.2*ln(V) - 0.23*G - 16.2*ln(L) + 50*sin(sqrt(2.46*radians(C)))) * 100 / 171)
+    C = percent comment lines (0-100)
+    Rank: A (> 19), B (9 < x <= 19), C (<= 9)
+  
+  KNOWN LIMITATIONS (per Arie van Deursen analysis):
+    - Tuning constants derived from small HP proprietary dataset; not replicated.
+    - Comment percentage treated as a positive contributor (questionable).
+    - Composite of three measures masks which factor is causing issues.
+    - Not independently validated on diverse codebases.
+    - "Think twice before using" — original authors caution against blind adoption.
+<<<END>>>
+
+SOURCE
+id: 23
+ts: 2026-05-29T00:19:00Z
+relevance: MED
+title: Empirical Validation of Cognitive Complexity as Understandability Predictor
+authors: Muñoz Barón, Wyrich, Wagner
+year: 2020
+venue: ESEM 2020 (ACM/IEEE International Symposium on Empirical Software Engineering and Measurement)
+quality: PEER-REVIEWED
+url: https://arxiv.org/pdf/2007.12520
+keywords: cognitive complexity, cyclomatic complexity, empirical validation, understandability, human study
+cites: Campbell 2018, McCabe 1976
+cited_by:
+content:
+  STUDY DESIGN:
+    216 early-career developers inspected and rated understandability of
+    12 Java classes with varying Cyclomatic and Cognitive Complexity levels.
+    Measured: time to understand, self-reported difficulty, correctness of
+    comprehension questions.
+  
+  KEY FINDING:
+    "Cognitive Complexity does not appear to fulfill the promise of being
+    a significant improvement over previously proposed measures, as far as
+    code understandability prediction is concerned."
+    
+    Both cognitive and cyclomatic complexity correlated similarly with
+    understandability — neither was clearly superior.
+    
+  FOLLOW-UP STUDY (Journal of Systems and Software, 2022):
+    Combining multiple metrics via Gaussian Process Regression:
+    Maximum R² = 0.8742 (using multi-metric regression).
+    Suggests no single metric suffices; combination works better.
+  
+  IMPLICATION FOR pflow:
+    Neither cognitive nor cyclomatic complexity alone is a reliable proxy
+    for human comprehension difficulty. Multiple metrics in combination
+    provide better signal. Nesting depth and live range / DepDegree may
+    add orthogonal signal to V(G) and Cognitive complexity.
+<<<END>>>
+
+SOURCE
+id: 24
+ts: 2026-05-29T00:20:00Z
+relevance: MED
+title: Slice-Based Cohesion Metrics and Refactoring
+authors: Harman, Orejas, Shepperd (Binkley et al. empirical study)
+year: 2007
+venue: ACM TOSEM (Transactions on Software Engineering and Methodology)
+quality: PEER-REVIEWED
+url: https://www.cs.loyola.edu/~binkley/papers/tosem07-slice-metrics.pdf
+keywords: program slice, cohesion, coupling, slice count, refactoring, complexity
+cites: Weiser 1984 (program slicing)
+cited_by:
+content:
+  SLICE-BASED COMPLEXITY METRICS:
+    Basis: program slices with respect to output variables of a module.
+    
+    SLICE COUNT: number of distinct slices for a module (one per output variable).
+      High slice count = module is doing many independent things = low cohesion.
+    
+    SLICE SIZE: average or max size (LOC) of slices.
+      Small uniform slices = tight cohesion; large varied slices = loose.
+    
+    Normalized slice-based cohesion: intersection/union of slices over all
+      output variable pairs.
+      S_C = overlap of slices / total statements in module
+      Range: 0 (no cohesion) to 1 (all statements shared across all slices)
+  
+  REFACTORING SIGNAL:
+    Module with multiple essentially independent slices = split point.
+    Slices with minimal intersection = statements in one slice that do not
+    appear in another = the natural "sub-module" boundaries.
+    This is a principled, data-flow-grounded way to identify Extract Method opportunities.
+  
+  EMPIRICAL FINDING:
+    "Slice-based metrics are not proxies for simple size-based metrics (LOC)."
+    They capture cohesion structure that LOC cannot.
+    Longitudinal studies show slice-based metrics quantify deterioration as program ages.
+<<<END>>>
+
+SOURCE
+id: 25
+ts: 2026-05-29T00:21:00Z
+relevance: HIGH
+title: Spaghetti Factor: A Software Complexity Metric Proposal
+authors: Philip Koopman
+year: 2017
+venue: betterembsw.blogspot.com (industry blog)
+quality: BLOG
+url: https://betterembsw.blogspot.com/2017/08/the-spaghetti-factor-software.html
+keywords: spaghetti factor, global variables, cyclomatic complexity, SLOC, composite metric, embedded systems
+cites: McCabe 1976
+cited_by:
+content:
+  FORMULA:
+    SF = SCC + (Globals * 5) + (SLOC / 20)
+    SCC = Strict Cyclomatic Complexity (counts each boolean operator separately)
+    Globals = number of read/write global variable accesses in the module
+    SLOC = source lines of non-comment code
+    
+  DIMENSION BALANCE:
+    Control flow complexity: SCC
+    Data flow complexity proxy: Globals * 5 (global state = hard-to-trace deps)
+    Module size: SLOC / 20
+    
+  THRESHOLDS:
+    SF 5-10:  Sweet spot
+    SF 15:    Upper limit for most modules
+    SF 20:    Review for refactoring
+    SF 30:    Refactor the design
+    SF 50:    Untestable; redesign needed
+    SF 75:    Unmaintainable; restart module
+    SF 100+:  Nightmare; re-architect subsystem
+  
+  EXAMPLE:
+    100 SLOC, SCC=9, 1 global access: SF = 9 + 5 + 5 = 19 (upper edge)
+  
+  NOTE: Informal/blog-level metric. Not peer-reviewed. Included for its
+  practical three-dimensional perspective combining CF, DF, and size.
+<<<END>>>
+
+SOURCE
+id: 26
+ts: 2026-05-29T00:22:00Z
+relevance: MED
+title: Cognitive Complexity: An Overview and Evaluation (ACM TechDebt 2018)
+authors: G. Ann Campbell
+year: 2018
+venue: ACM TechDebt 2018 (International Conference on Technical Debt), Gothenburg, Sweden. Proceedings pp. 57-58. DOI: 10.1145/3194164.3194186
+quality: WORKSHOP
+url: https://dl.acm.org/doi/10.1145/3194164.3194186
+keywords: cognitive complexity, understandability, technical debt, SonarSource, code smell
+cites: McCabe 1976
+cited_by: Muñoz Barón et al. 2020, Journal of Systems and Software 2022
+content:
+  ORIGIN: Metric designed as improvement on cyclomatic complexity for
+    measuring understandability rather than testability.
+    First available: December 2016 in SonarQube.
+  
+  SURVEY PORTION: Brief survey of cognitive complexity issues in subset of
+    open source projects under static analysis on SonarCloud.
+    (Specific numbers not publicly available from abstract alone.)
+  
+  KEY CLAIM: "Cyclomatic Complexity works very well for measuring testability,
+    but not for maintainability." Cognitive complexity addresses this gap.
+  
+  DOI: 10.1145/3194164.3194186
+  Note: 2-page paper at workshop; technical detail is in the white paper.
+<<<END>>>
+
+
+SOURCE
+id: 27
+ts: 2026-05-29T00:23:00Z
+relevance: HIGH
+title: complexipy: Python Cognitive Complexity Tool
+authors: Carlos Gomes Brauer (databranner)
+year: 2024
+venue: PyPI; Rust-backed Python package
+quality: CODE
+url: https://pypi.org/project/complexipy/
+keywords: complexipy, cognitive complexity, Python, Rust, threshold 15
+cites: Campbell 2018
+cited_by:
+content:
+  ALGORITHM: Implements G. Ann Campbell's cognitive complexity metric.
+  IMPLEMENTATION: Rust backend for performance; Python frontend.
+  LANGUAGE: Python only (requires Python >= 3.8).
+  DEFAULT THRESHOLD: 15 (via --max-complexity-allowed or TOML config)
+  STRUCTURES INCREMENTED: control structures (if/else, loops), nesting depth penalties.
+  REPORTING: module-level and function-level separately.
+  FEATURE: --top 5 to show 5 most complex functions.
+  NOTE: Does not detail every increment rule in PyPI description; see white paper.
+<<<END>>>
+
+SOURCE
+id: 28
+ts: 2026-05-29T00:24:00Z
+relevance: HIGH
+title: McCabe Complexity Metric (pmccabe / GNU complexity tool)
+authors: Multiple (pmccabe by Paul Oman; GNU complexity by Bruce Korb)
+year: 1994
+venue: unix/linux tools; pmccabe manpage, GNU complexity
+quality: CODE
+url: https://manpages.ubuntu.com/manpages/focal/man1/pmccabe.1.html
+keywords: pmccabe, GNU complexity, McCabe cyclomatic complexity, C, C++, non-commented lines
+cites: McCabe 1976
+cited_by:
+content:
+  pmccabe: Computes McCabe cyclomatic complexity for C/C++ programs.
+    Output: per-function modified cyclomatic complexity (MCC) and NCSL.
+    Modified complexity (mccabe's "strict" mode): counts each case in switch.
+    Also provides non-commented source lines (NCSL).
+    Decision nodes counted: if, while, for, do, case, ?, ||, &&
+  
+  GNU complexity (https://www.gnu.org/software/complexity/):
+    Measures complexity of C source code.
+    Based on McCabe's original formula.
+    Default maximum: 10 (triggers warning).
+    Features: per-function complexity, histogram output.
+  
+  THRESHOLD: Both default to 10 as the warning threshold.
+<<<END>>>
+
+SOURCE
+id: 29
+ts: 2026-05-29T00:25:00Z
+relevance: HIGH
+title: Metric Summary Table: Computation from CFG/Dominators/Def-Use for pflow
+authors: (synthesized record for pflow reference)
+year: 2026
+venue: pflow project notes
+quality: DOCS
+url:
+keywords: CFG, dominators, post-dominators, def-use, PDG, metric computation, pflow
+cites: all above sources
+cited_by:
+content:
+  METRIC -> WHAT IT NEEDS -> HOW TO COMPUTE -> SIMPLIFICATION SIGNAL
+  
+  V(G) [Cyclomatic Complexity]:
+    Needs: CFG
+    Compute: E - N + 2  (edges - nodes + 2) for single function
+    Signal: V(G) > 10 = too many independent paths; decompose function
+  
+  ev(G) [Essential Complexity]:
+    Needs: CFG + T1-T2 reduction (or interval analysis)
+    Compute: Iteratively remove single-entry/single-exit subgraphs (structured primes)
+             until no more removable. V(G) of remaining graph = ev(G).
+    Signal: ev(G) > 1 = unstructured jumps; ev(G) - 1 = number of
+            non-structurable constructs. pflow target: reduce ev(G) to 1.
+  
+  Cognitive Complexity:
+    Needs: CFG (structured with nesting depth tracking) + lexical structure
+    Compute: DFS on AST/CFG; at each control structure:
+             increment += 1 + nesting_depth (structural);
+             or += 1 (hybrid/fundamental);
+             boolean sequences += 1 per sequence type.
+    Signal: > 15 = hard to understand; deeply nested code = nesting penalty.
+  
+  NPATH:
+    Needs: CFG (hierarchical, no loops collapsed)
+    Compute: Recursive formula per statement type (multiplicative for sequences,
+             additive for branches). See record id:4 for full formula table.
+    Signal: > 200 = needs decomposition; exponential sensitivity to nesting.
+  
+  Knots:
+    Needs: Linearized program text + control-flow arcs
+    Compute: Count crossing pairs of arcs in linear order.
+             (i->j) and (k->l) cross if i<k<j<l or k<i<l<j.
+    Signal: > 0 = unstructured; knots = pairs of crossing jumps.
+  
+  Nesting Depth (max):
+    Needs: CFG or AST
+    Compute: Max depth of nesting counter during traversal.
+    Signal: > 3-4 = deeply nested; each level removed improves cognitive complexity.
+  
+  DepDegree:
+    Needs: CFG + reaching definitions (def-use graph)
+    Compute: dd(G) = |E| in use-def graph S_G.
+             Per statement: count how many definitions reach each use.
+             dd_G(s) = sum_x |rd(s,x)| for all vars x used in s.
+    Signal: High-dd statements = many dependencies; scope reduction helps.
+  
+  Variable Span / Live Range:
+    Needs: CFG + def-use chains
+    Compute: For each var x: distance (statements) from each def to last use.
+             Average span = avg statements between successive uses.
+             Live range overlap = simultaneously live variables at each point.
+    Signal: Long spans = move definitions closer to uses; reduce scope.
+  
+  Halstead Volume:
+    Needs: Token stream (lexer)
+    Compute: V = N * log2(n) where N = total tokens, n = distinct tokens.
+    Signal: V > 1000 per function (guideline); reduce by decomposition.
+  
+  Halstead Difficulty:
+    Needs: Token stream
+    Compute: D = (n1/2) * (N2/n2) where n1=distinct ops, N2=total operands, n2=distinct operands.
+    Signal: High D = error-prone; reduce by reducing operand reuse rate.
+  
+  Slice Cohesion:
+    Needs: CFG + def-use + post-dominators (for slicing)
+    Compute: Backward slice for each output variable; measure intersection of slices.
+    Signal: Low intersection = independent slices = natural split points = Extract Method.
+  
+  Control Dependence Fan-out:
+    Needs: PDG (post-dominator frontier computation)
+    Compute: For each predicate p: count statements control-dependent on p.
+    Signal: Large fan-out = predicate controls too many things; refactor the branch condition.
+  
+  DATA FLOW COMPLEXITY (Oviedo):
+    Needs: CFG + reaching definitions
+    Compute: DF(P) = |{(d,u) : d defines x, u uses x, d reaches u}| over all vars.
+    Signal: High DF = many def-use pairs to track; reduce variable scope or split function.
+<<<END>>>
+
+
+SEARCH_LOG
+query: "McCabe cyclomatic complexity essential complexity 1976 interval reduction T1-T2 prime decomposition formula" | results: 6 useful | top: Essential complexity - Wikipedia
+query: "cognitive complexity SonarSource Ann Campbell 2018 white paper increment rules nesting penalty scoring" | results: 5 useful | top: Cognitive Complexity SonarSource PDF4PRO
+query: "NPATH complexity Nejmeh 1988 branch testing formula definition" | results: 4 useful | top: NPATH Semantic Scholar
+query: "Oviedo data flow complexity 1980 def-use pairs formula metric" | results: 3 useful | top: Control flow data flow complexity Semantic Scholar
+query: "DepDegree Beck Diehl 2011 data dependency complexity metric formula" | results: 5 useful | top: sosy-lab.org DepDegreeProperties
+query: "knots metric Woodward Hennell Duran 1979 control flow edge crossings unstructuredness" | results: 2 useful | top: IEEE 1702586
+query: "live range variable span def-use complexity metric program comprehension" | results: 4 useful | top: CACM from-code-complexity-metrics-to-program-comprehension
+query: "Halstead software metrics 1977 formulas volume difficulty effort" | results: 6 useful | top: Halstead complexity measures Wikipedia
+query: "SonarQube cognitive complexity threshold 'Functions should not be too complex' rule squid" | results: 5 useful | top: SonarQube S3776 rule page
+query: "CodeScene brain method complexity hotspot metric definition threshold" | results: 4 useful | top: CodeScene code-health.html
+query: "McCabe 1976 'A Complexity Measure' IEEE Transactions T1 T2 reduction essential complexity" | results: 5 useful | top: literateprogramming.com mccabe.pdf (503/connection refused)
+query: "nesting depth maximum indentation complexity metric definition 'max nesting depth' refactoring threshold" | results: 5 useful | top: aivosto.com/project/help/pm-complexity.html
+query: "essential complexity McCabe unstructured goto spaghetti simplification refactoring metric CFG reduction" | results: 5 useful | top: Essential complexity Wikipedia
+query: "cognitive complexity white paper 'G. Ann Campbell' exact rules structural increment hybrid increment nesting level" | results: 5 useful | top: cis.upenn.edu CognitiveComplexity.pdf (binary PDF)
+query: "CodeClimate complexity thresholds cognitive complexity cyclomatic complexity method length smells configuration" | results: 5 useful | top: docs.codeclimate.com/docs/cognitive-complexity (redirected to qlty.sh)
+query: "JetBrains IntelliJ 'too complex' 'deeply nested' refactoring inspection cyclomatic complexity threshold" | results: 5 useful | top: Inspectopedia OverlyComplexClass
+query: "Oviedo 1980 data flow complexity IEEE COMPSAC 'CF + DF' control flow data flow" | results: 3 useful | top: Semantic Scholar Oviedo
+query: "Beck Diehl 2011 DepDegree ICPC program comprehension data flow dependency formula original paper" | results: 4 useful | top: sosy-lab.org pub 2014-ICPC DepDegree (binary PDF)
+query: "Woodward Hennell Duran 1979 knots control flow crossing number linearized program text unstructured" | results: 2 useful | top: IEEE Transactions paper confirmed
+query: "Harrison Magel 1981 nesting level complexity metric SIGPLAN depth formula definition" | results: 4 useful | top: scholarsmine.mst.edu (403 forbidden)
+query: "data flow complexity metric def-use simplification reducing variable scope refactoring tool detection" | results: 2 useful | top: cyclomatic complexity guides
+query: "program slice complexity metric slicing complexity Weiser 1984 slice length slice number simplification" | results: 4 useful | top: Weiser 1984 program slicing
+query: "Halstead 1977 Elements of Software Science operator operand program length N1 N2 n1 n2" | results: 5 useful | top: Elements of Software Science Google Books
+query: "variable span live variables complexity metric Oviedo OR Harrison OR McClure average span def-use" | results: 3 useful | top: geeksforgeeks.org complexity-metrics
+query: "program dependence graph PDG Ferrante Ottenstein Warren 1987 slice complexity" | results: 5 useful | top: digitalcommons.mtu.edu Ferrante
+query: "SonarQube rule S3776 cognitive complexity 15 threshold exact increment rules implementation" | results: 4 useful | top: sonar-python GitHub S3776.html
+query: "CodeScene hotspot brain method cyclomatic complexity threshold lines code nesting depth configuration JSON" | results: 4 useful | top: docs.enterprise.codescene.io code-health.html
+query: "cognitive complexity PyPI implementation source wcc OR lizard OR radon python cyclomatic cognitive metric tool" | results: 5 useful | top: PyPI complexipy, lizard, radon
+query: "radon Python cyclomatic complexity maintainability index formula threshold A B C D E F ranks" | results: 4 useful | top: radon.readthedocs.io intro.html
+query: "Weyuker 1988 complexity metric properties criteria formal evaluation software" | results: 4 useful | top: IEEE 87287 Weyuker properties
+query: "cognitive complexity SonarSource 2018 boolean operator sequence +1 exact rule algorithm python java example" | results: 4 useful | top: SonarSource blog cognitive-complexity-because-testability-understandability
+query: "control dependence post-dominator complexity metric control dependence region PDG simplification opportunity" | results: 4 useful | top: citeseerx PDG slides
+query: "cyclomatic complexity bad fix probability defect prediction maintenance effort empirical threshold" | results: 4 useful | top: betterembsw.blogspot.com avoid-high-cyclomatic-complexity
+query: "lizard cognitive complexity implementation source code github what structures are counted" | results: 3 useful | top: terryyin/lizard GitHub
+query: "Ferrante Ottenstein Warren 1987 PDG control dependence post-dominator formula construction algorithm TOPLAS" | results: 5 useful | top: csa.iisc.ac.in ferrante-pdg-1987.pdf (binary PDF)
+query: "McCabe essential complexity GNAT ada gcc essential_complexity tool computed metric" | results: 5 useful | top: gcc.gnu.org GNAT User's Guide Complexity Metrics Control
+query: "cognitive complexity ACM TechDebt 2018 Campbell An Origin Story Overview and Evaluation abstract results" | results: 4 useful | top: dl.acm.org doi TechDebt 2018
+query: "cognitive complexity empirical validation understandability 2020 2021 2022 comparison cyclomatic results" | results: 4 useful | top: arxiv 2007.12520
+query: "Maintainability Index Coleman 1994 SEI formula 171 - 5.2 volume complexity SLOC original formula history" | results: 4 useful | top: avandeursen.com think-twice maintainability-index
+query: "Spaghetti Factor OR knots OR essential complexity tool implementation static analysis Python Java detect unstructured" | results: 3 useful | top: betterembsw.blogspot.com spaghetti-factor
+query: "program slice size complexity metric slice-based cohesion slice count simplification refactoring opportunity" | results: 4 useful | top: cs.loyola.edu binkley tosem07-slice-metrics.pdf
+query: "metric-driven refactoring flag argument detection too many parameters too many branches flow complexity code smell" | results: 3 useful | top: luzkan.github.io/smells/flag-argument
+<<<END>>>
+
+GAPS
+DepDegree original Beyer-Fararooy 2010 ICPC paper full text (behind paywall; confirmed publication details only)
+Oviedo 1980 COMPSAC paper full text (ACM DL 403; only abstract/citation data available)
+McCabe 1976 IEEE TSE original paper full text (literateprogramming.com returned ECONNREFUSED; Wikipedia and secondary sources used)
+Harrison-Magel 1981 SIGPLAN Notices full text (403 forbidden; only bibliographic info)
+Ferrante-Ottenstein-Warren 1987 TOPLAS PDF (binary; not readable via WebFetch)
+Weyuker 1988 nine properties formal text (confirmed existence; specific property list reconstructed from citing papers)
+Formal T1-T2 reduction rules from McCabe 1976 original paper (reconstructed from Wikipedia and secondary sources)
+Exact tool thresholds for CodeScene Brain Method default values (documentation links to external help center)
+Cognitive Complexity peer-reviewed empirical study results in full (arxiv PDF binary; abstract only)
+Knots paper (Woodward-Hennell-Hedley 1979) full text: confirmed IEEE SE-5:1:45-50 but not fetched
+NPATH original Nejmeh 1988 CACM paper full text (Semantic Scholar and thefreelibrary returned 403)
+GNU complexity tool manual full text (server rate-limited)
+Specific cognitive complexity test file annotation table from sonar-java (partial; got nesting example only)
+Beck and Diehl (separate researchers from Beyer) — unclear if they published anything on DepDegree; likely user confusion between Beyer-Fararooy and Beck-Diehl
+"DCOND" and "DLOOP" original paper sources (found only in tool documentation; original academic citations unclear)
+Control-dependence fan-out complexity metric papers (no dedicated metric paper found; derived from PDG literature)
+<<<END>>>
+

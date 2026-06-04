@@ -1,0 +1,7 @@
+MINER_DUMP
+topic: Compiler Intermediate Representations — analysis/transformation fit, with focus on CFG+dominators, SSA variants, PDG/SDG, RVSDG, Sea-of-Nodes, CPS/ANF/SSA equivalence, e-graphs, polyhedral — for pflow (Python source-level flow analysis + simplification + regeneration tool)
+depth: 3
+date: 2026-05-29
+status: IN_PROGRESS
+record_count: 0
+<<<END>>>

@@ -1,0 +1,307 @@
+MINER_DUMP
+topic: Program Dependence Graphs and Program Slicing — technical reference for pflow
+depth: 3 (deep)
+date: 2026-05-29
+status: IN_PROGRESS
+record_count: 0
+<<<END>>>
+
+SOURCE
+id: 1
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: The Program Dependence Graph and Its Use in Optimization
+authors: Jeanne Ferrante, Karl J. Ottenstein, Joe D. Warren
+year: 1987
+venue: ACM Transactions on Programming Languages and Systems (TOPLAS), Vol. 9, No. 3, July 1987, pp. 319-349
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1145/24039.24041
+keywords: program dependence graph, control dependence, data dependence, PDG construction, optimization, post-dominator, augmented CFG, region nodes
+cites: Ottenstein & Ottenstein 1984; Kuck 1978 dependence analysis; Allen & Kennedy 1981
+cited_by: Horwitz-Reps-Binkley 1990; Cytron et al. 1991; essentially all subsequent PDG/slicing work
+content:
+  FORMAL DEFINITION — Control Dependence (from paper, section 2):
+  "A vertex Y in a CFG is control dependent on vertex X iff
+   (1) there exists a nontrivial path p from X to Y such that Y post-dominates every vertex
+       after X on p, and
+   (2) X does not post-dominate Y."
+  
+  Equivalently: There exist two successors of X, one of which is post-dominated by Y and one
+  of which is not post-dominated by Y.
+  
+  AUGMENTED CFG:
+  Add a synthetic START node with two edges: one to the CFG entry (labeled "true") and one
+  to the CFG exit (labeled "false"). This makes the entry node control-dependent on START,
+  so all nodes have a control dependence. The augmented CFG is used for computing control
+  dependence.
+  
+  ALGORITHM — Computing Control Dependence from Post-Dominator Tree:
+  Given augmented CFG G' and its post-dominator tree T:
+  For each edge (A -> B) in G' such that B does NOT post-dominate A:
+    Find the least common ancestor (LCA) of A and B in T (call it L).
+    If L == A: every node on the path from A to B in T (exclusive of A, inclusive of B)
+               is control-dependent on A.
+    If L != A: every node on the path from L to B in T (inclusive of both endpoints,
+               exclusive of L if L != A) is control-dependent on A.
+  Formally: traverse up T from B toward L (exclusive), marking each node as control-
+  dependent on A (the source of the CFG edge).
+  
+  REGION NODES:
+  For nodes with multiple control dependences from the same predicate (loop headers, etc.),
+  region nodes are introduced. A region node groups a set of program statements that are
+  each control dependent on the same predicate with the same truth value.
+  A region node has no corresponding code; it groups its members.
+  
+  DATA DEPENDENCE TYPES defined in the paper:
+  - Flow dependence (true dependence): S1 defines X, S2 uses X, no intervening definition
+    (S2 is flow-dependent on S1 for variable X). Written: S1 delta_f X -> S2
+  - Anti-dependence: S1 uses X, S2 defines X (S2 is anti-dependent on S1).
+  - Output dependence: Both S1 and S2 define X.
+  For PDG purposes, only FLOW dependence edges appear (data edges in PDG represent
+  def-use relationships). The original paper uses flow-dependence edges only in the PDG
+  for optimization purposes.
+  
+  PDG CONSTRUCTION ALGORITHM (summary):
+  Input: CFG of a procedure
+  Step 1: Augment CFG with START node.
+  Step 2: Compute post-dominator tree of augmented CFG (using Lengauer-Tarjan or Cooper-
+          Harvey-Kennedy).
+  Step 3: For each CFG edge (A->B) where B does not post-dominate A, traverse from B up
+          the post-dominator tree to (but not including) LCA(A,B) in the tree; add control
+          dependence edge A -> each traversed node.
+  Step 4: Compute reaching definitions (def-use chains) for data dependence edges.
+          For each use U of variable v, add a flow-dependence edge D -> U for each
+          definition D of v that reaches U without an intervening redefinition.
+  Step 5: Merge control and data dependence edges into the PDG.
+  
+  COMPLEXITY:
+  Post-dominator tree: O(E * alpha(E,N)) using Lengauer-Tarjan where E = CFG edges, N = nodes
+  Control dependence computation: O(E * N) in worst case (traversal up post-dom tree per edge)
+  but typically O(E + N * D) where D is average depth of post-dominator tree.
+  The paper claims PDG construction is O(E log N) for structured programs.
+  Data dependence: O(N * V) where V = variables (bit-vector operations on N-bit sets).
+  
+  KEY THEOREM (paper, Section 2):
+  "Theorem 1: For a program P with control flow graph G, vertex v is control dependent on
+  vertex u iff in the post-dominator tree of G, there is an edge from a child of u to an
+  ancestor-or-equal of v" — i.e., precisely the CFG successor of u that is an ancestor-
+  or-equal of v in the post-dominator tree.
+  
+  NOTE on 'forward' CFG edges for control dependence:
+  Only CFG edges where the destination does NOT post-dominate the source contribute control
+  dependence. For an if-then-else: the 'then' successor is control-dependent on the
+  predicate; same for 'else' successor. The exit node post-dominates everything; no node
+  is control-dependent on the exit.
+<<<END>>>
+
+SOURCE
+id: 2
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: The Program Dependence Graph in a Software Development Environment
+authors: Karl J. Ottenstein, Linda M. Ottenstein
+year: 1984
+venue: Proceedings of the ACM SIGSOFT/SIGPLAN Symposium on Practical Software Development Environments, ACM SIGPLAN Notices 19(5), pp. 177-184
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1145/800020.808263
+keywords: program dependence graph, program slicing, graph reachability, backward slice, linear time
+cites: Weiser 1981; Kuck 1978
+cited_by: Ferrante-Ottenstein-Warren 1987; Horwitz-Reps-Binkley 1990; Frank Tip 1994 survey
+content:
+  KEY CONTRIBUTION: First paper to show that program slicing can be formulated as a
+  graph reachability problem on a Program Dependence Graph (PDG).
+  
+  BACKWARD SLICE AS REACHABILITY:
+  "A backward slice with respect to a vertex v in the PDG consists of all vertices w such
+  that there exists a directed path from w to v in the PDG (following control dependence
+  and data/flow dependence edges)."
+  
+  This reduces Weiser's iterative dataflow computation to a single-pass graph traversal
+  (BFS or DFS backward from the criterion node).
+  
+  COMPLEXITY: O(V + E) where V = PDG vertices, E = PDG edges.
+  Weiser's dataflow approach required iterative fixpoint computation; PDG reachability
+  is linear in the size of the PDG.
+  
+  OBSERVATION: PDGs were originally developed for parallelizing compilers. The Ottensteins
+  observed they are the right data structure for slicing.
+  
+  NOTE: This paper deals with intraprocedural slicing only. Interprocedural extension
+  requires the System Dependence Graph (Horwitz-Reps-Binkley 1990).
+  
+  FORWARD SLICE: Also straightforward — forward slice from v = all vertices w reachable
+  from v following directed PDG edges (forward traversal). Not explicitly stated as the
+  main contribution of this paper but is a direct consequence of the PDG structure.
+  
+  EDGE TYPES IN PDG (from Ottenstein&Ottenstein):
+  Two kinds of edges: control dependence edges and data dependence (flow dependence) edges.
+  A slice traverses BOTH kinds of edges backwards.
+<<<END>>>
+
+SOURCE
+id: 3
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: Program Slicing
+authors: Mark D. Weiser
+year: 1984
+venue: IEEE Transactions on Software Engineering, Vol. SE-10, No. 4, July 1984, pp. 352-357
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1109/TSE.1984.5010248
+keywords: program slicing, dataflow analysis, slice criterion, backward slice, RELEVANT_VARIABLES, DEF, REF, USE, fixpoint
+cites: Weiser 1979 dissertation, Weiser 1981 ICSE
+cited_by: Ottenstein&Ottenstein 1984; Horwitz-Reps-Binkley 1990; Tip 1994; essentially all slicing work
+content:
+  SLICE CRITERION: A slice criterion is a pair C = (s, V) where s is a program statement
+  (or program point) and V is a set of variables of interest at s.
+  
+  STATIC BACKWARD SLICE: S(C) = the minimal executable sub-program P' of P such that
+  whenever P and P' both halt, they compute identical values for the variables in V at
+  statement s (for all inputs).
+  Weiser acknowledges finding minimal slices is undecidable in general; the algorithm
+  computes a safe over-approximation using dataflow analysis.
+  
+  DATAFLOW EQUATIONS (Weiser's formulation):
+  
+  For each statement s, define:
+    DEF(s)  = set of variables defined at s
+    REF(s)  = set of variables referenced (used) at s
+  
+  For control predicates (branch nodes), REF(s) includes variables in the condition.
+  
+  The key notion is RELEVANT_VARIABLES at a program point, propagated backwards:
+  
+  For a non-predicate statement s:
+    DIRECTLY_RELEVANT_VARS(s, V) = if (DEF(s) ∩ V ≠ ∅)
+                                       then (V - DEF(s)) ∪ REF(s)
+                                       else V
+  
+  For a predicate statement (branch) p, additional variables are needed for CONTROL
+  dependence: if any statement whose execution is governed by p is in the slice, then
+  p itself must be included and REF(p) must be added to the relevant variables.
+  
+  ALGORITHM (iterative dataflow over CFG, backward):
+  Initialize: RELEVANT_VARS = V at statement s, empty elsewhere.
+  Propagate backward along CFG edges using transfer functions above.
+  Repeat until fixpoint.
+  Include statement n in the slice if DEF(n) ∩ RELEVANT_VARS_at_successor(n) ≠ ∅,
+  or if n is a predicate controlling any included statement.
+  
+  WHY CONTROL DEPENDENCE IS NECESSARY:
+  Consider:
+    (1) if (x > 0) then
+    (2)   y := x + 1
+    (3) end
+    (4) print(y)
+  
+  Slice w.r.t. (4, {y}): 
+  - Data only: includes (2) [defines y], but NOT (1) [the predicate].
+  - Without (1), y := x + 1 always executes, changing program semantics.
+  - Correct slice must include (1) because (2) is control-dependent on (1).
+  
+  A data-dependence-only traversal misses the predicate. The slice would be semantically
+  incorrect because it would execute the assignment unconditionally.
+  
+  COMPLEXITY: The dataflow algorithm runs in O(V^2 * N) where V = variables, N = nodes,
+  because each variable set can be N bits and each node may update sets up to N times.
+  Weiser's formulation is less efficient than PDG reachability (Ottenstein 1984).
+  
+  NOTE: Weiser's original 1979 dissertation and 1981 ICSE paper also define slicing;
+  the 1984 TSE paper is the most-cited formulation.
+<<<END>>>
+
+SOURCE
+id: 4
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: Interprocedural Slicing Using Dependence Graphs
+authors: Susan Horwitz, Thomas Reps, David Binkley
+year: 1990
+venue: ACM Transactions on Programming Languages and Systems (TOPLAS), Vol. 12, No. 1, January 1990, pp. 26-60
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1145/77606.77608
+keywords: system dependence graph, SDG, interprocedural slicing, summary edges, calling context, two-pass algorithm, context-sensitive, unrealizable paths
+cites: Ottenstein&Ottenstein 1984; Ferrante-Ottenstein-Warren 1987; Weiser 1984
+cited_by: Frank Tip 1994; WALA; most interprocedural analysis tools
+content:
+  SYSTEM DEPENDENCE GRAPH (SDG):
+  An SDG is a graph G_S = (V, E) representing an entire program (collection of procedures).
+  
+  VERTEX TYPES:
+  - Entry vertex: one per procedure, represents procedure entry point
+  - Statement vertex: one per statement
+  - Predicate vertex: one per control predicate
+  - Actual-in vertex: one per actual parameter at each call site (for each argument)
+  - Actual-out vertex: one per actual parameter at each call site (for output/ref params)
+  - Formal-in vertex: one per formal parameter at procedure entry
+  - Formal-out vertex: one per formal parameter at procedure exit
+  - Call vertex: one per call site
+  
+  EDGE TYPES:
+  1. Flow dependence edges (data): within each procedure, same as in PDG
+  2. Control dependence edges: within each procedure, same as in PDG
+  3. Call edges: from call site to called procedure's entry vertex
+  4. Parameter-in edges: from actual-in to formal-in
+  5. Parameter-out edges: from formal-out to actual-out
+  6. Summary edges: transitive data dependences through a procedure call
+     - A summary edge from actual-in ai to actual-out ao means: data may flow
+       from argument ai through the called procedure and affect output ao.
+     - Summary edges are pre-computed once; they allow slicing without re-entering
+       procedures during a slice traversal.
+  
+  SUMMARY EDGES — CONSTRUCTION:
+  Summary edges are computed using an attribute grammar approach (subordinate characteristic
+  graphs). The algorithm:
+  1. Construct the "linkage grammar" for the system (captures parameter passing).
+  2. Compute subordinate characteristic graphs for the grammar's nonterminals.
+  3. A summary edge ai -> ao exists iff there is a path from formal-in fi (corresponding
+     to ai) to formal-out fo (corresponding to ao) in the procedure's own PDG,
+     considering transitive calls.
+  Formally equivalent to: solve the CFL-reachability problem on the SDG restricted to
+  parameter-in/parameter-out/call/return edges.
+  
+  CALLING CONTEXT PROBLEM:
+  Naive interprocedural slicing on the SDG without summary edges can produce slices that
+  include statements reachable only via UNREALIZABLE PATHS: paths that enter a procedure
+  via one call site but exit via a parameter-out edge of a DIFFERENT call site.
+  This is impossible in any actual execution (a procedure returns to its caller, not to
+  a different caller's return point).
+  
+  Example of unrealizable path:
+    call site 1: foo(a, ...)   -- enter via param-in edge from call 1
+    ...body of foo...
+    call site 2: foo(b, ...)   -- exit via param-out edge to call 2's actual-out
+  This path is unrealizable: foo cannot "return" to a call site that did not call it.
+  
+  TWO-PASS SLICING ALGORITHM:
+  The algorithm avoids unrealizable paths by running two passes:
+  
+  PASS 1 (Backward — ascending, from criterion upward through calls):
+  Traverse backward following: flow-dependence, control-dependence, summary, 
+  parameter-out (from actual-out upward to formal-out), and call edges.
+  Do NOT traverse parameter-in edges (which would descend into callees).
+  This pass finds what affects the criterion within the current procedure and via
+  summary edges, plus what calls the current procedure.
+  
+  PASS 2 (Forward — descending, from callers found in Pass 1 back into callees):
+  From each call vertex reached in Pass 1, traverse forward following: flow-dependence,
+  control-dependence, summary, parameter-in (from formal-in to actual-in), call edges.
+  Do NOT traverse parameter-out edges upward (which would ascend from callees).
+  This pass finds what the criterion depends on within procedures called by the callers.
+  
+  COMBINED RESULT: The union of vertices visited in both passes is the slice.
+  This correctly handles calling context: a vertex in a called procedure is included
+  only if it was reached via a matching call-return pair (enforced by the two-pass
+  structure and summary edges).
+  
+  COMPLEXITY:
+  - Summary edge computation: O(n^3) in worst case (n = number of nodes in SDG)
+    using attribute grammar/CFL-reachability
+  - Slicing (two passes): O(n^2) using the SDG with summary edges
+  - Total: O(n^3) preprocessing + O(n^2) per query
+  
+  NOTE: For the original PLDI 1988 version, see:
+  Horwitz, Reps, Binkley. "Interprocedural slicing using dependence graphs."
+  PLDI 1988, pp. 35-46. The TOPLAS 1990 paper is the journal version.
+<<<END>>>
+

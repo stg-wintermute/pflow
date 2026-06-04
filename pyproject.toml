@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pflow"
+version = "0.2.0"
+description = "Explicit program flow graphs + flow-simplification passes for Python code review agents"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{name = "lafiel"}]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+pflow = "pflow.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pflow*"]

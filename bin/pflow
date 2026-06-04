@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#
+# pflow wrapper
+#
+# Symlink this into /usr/local/bin (or ~/.local/bin) to get a global `pflow` command.
+#
+# Recommended:
+#   chmod +x bin/pflow
+#   sudo ln -s "$PWD/bin/pflow" /usr/local/bin/pflow
+
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Point PYTHONPATH at the project root so the directory
+# pflow/pflow/ becomes importable as `import pflow`.
+# Prepend so local pflow wins; user can still override with PYTHONPATH="" pflow ... for clean stdlib.
+export PYTHONPATH="$PROJECT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
+# Use uv only to pick a Python. Run the module directly so the
+# caller's current working directory (and relative paths like state.py:func)
+# are preserved.
+if command -v uv >/dev/null 2>&1; then
+    PYTHON_BIN=$(uv python find --project "$PROJECT_DIR" 2>/dev/null || uv python find 2>/dev/null || echo python3)
+else
+    PYTHON_BIN=python3
+fi
+
+# -P (PYTHONSAFEPATH) stops Python from prepending the caller's cwd to
+# sys.path. Without it, running pflow from a directory that contains a
+# module named like a stdlib one (e.g. server/types.py) shadows the real
+# stdlib and breaks every `from types import ...` — even inside runpy.
+# We still APPEND the cwd at the end of sys.path so `live:` targets can
+# import working-directory modules, but stdlib and pflow always win.
+export PFLOW_CWD="$(pwd)"
+exec "$PYTHON_BIN" -P -c 'import os, sys; sys.path.append(os.environ["PFLOW_CWD"]); from pflow.cli import main; raise SystemExit(main())' "$@"

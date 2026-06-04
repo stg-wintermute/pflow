@@ -1,0 +1,693 @@
+MINER_DUMP
+topic: Differential and Incremental Program Analysis / Semantic Code Diffing for pflow diff
+depth: 2 (standard)
+date: 2026-05-29
+status: IN_PROGRESS
+record_count: 0
+<<<END>>>
+
+SOURCE
+id: 1
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: Fine-grained and Accurate Source Code Differencing (GumTree)
+authors: Jean-Rémy Falleri, Floréal Morandat, Xavier Blanc, Matias Martinez, Martin Monperrus
+year: 2014
+venue: ASE '14 — ACM/IEEE International Conference on Automated Software Engineering, Västeras, Sweden, pp. 313–324
+quality: PEER-REVIEWED
+url: https://hal.science/hal-01054552/document
+keywords: AST differencing, GumTree, tree edit distance, edit script, node matching, top-down, bottom-up, insert/delete/move/update
+cites: Zhang-Shasha 1989
+cited_by: TOSEM 2024 refactoring-aware diff paper, numerous subsequent AST diff tools
+content:
+  ALGORITHM — Three phases:
+  Phase 1 (top-down greedy): Searches for isomorphic subtrees between T1 and T2.
+    Uses a priority queue ordered by subtree height.
+    For each candidate pair of subtrees, checks if they are isomorphic (same type, same label, same structure).
+    Adds matched subtree pairs to mapping set M.
+  Phase 2 (bottom-up): Propagates mappings from matched subtrees upward to their parents.
+    A parent node is matched if a "significant number" of its descendants are already matched.
+    Significance threshold is configurable (default: 0.5 of max descendants).
+  Phase 3 (recovery/last chance): For each new parent mapping from phase 2, searches for
+    recovery mappings among still-unmatched descendants using an optimal matching (DP).
+  EDIT OPERATIONS: 4 types: Insert, Delete, Move, Update.
+    Insert: node in T2 not matched in T1.
+    Delete: node in T1 not matched in T2.
+    Move: matched nodes whose parents differ.
+    Update: matched nodes whose labels differ.
+  EDIT SCRIPT GENERATION: Once mapping M is computed, edit script is derived by:
+    1. Deleting unmatched nodes in T1 (post-order traversal).
+    2. Inserting/moving nodes not in T1 or with different parents.
+    3. Updating nodes with changed labels.
+  COMPLEXITY: Matching is O(n^2) worst case; greedy top-down phase reduces this in practice.
+  IMPLEMENTATION: GumTreeDiff GitHub — https://github.com/GumTreeDiff/gumtree
+    Supports multiple parsers: JDT (Java), srcML, ANTLR, tree-sitter.
+    Output: edit script in JSON/XML; also integrates with IDE plugins.
+  LATER EXTENSION (ICSE 2024): "Fine-grained, accurate and scalable source differencing"
+    URL: https://dl.acm.org/doi/10.1145/3597503.3639148
+    Falleri et al., adds scalability improvements.
+<<<END>>>
+
+SOURCE
+id: 2
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: Simple Fast Algorithms for the Editing Distance between Trees and Related Problems (Zhang-Shasha)
+authors: Kaizhong Zhang, Dennis Shasha
+year: 1989
+venue: SIAM Journal on Computing, Vol. 18, No. 6, pp. 1245–1262, December 1989
+quality: PEER-REVIEWED
+url: https://grantjenks.com/wiki/_media/ideas/simple_fast_algorithms_for_the_editing_distance_between_tree_and_related_problems.pdf
+keywords: tree edit distance, ordered labeled trees, dynamic programming, insert, delete, relabel, cost function
+cites: []
+cited_by: GumTree 2014, RTED 2012, Autochrome, difftastic, nearly all AST diff literature
+content:
+  PROBLEM: Given two ordered labeled trees T1, T2, find the minimum cost sequence of
+    edit operations (insert, delete, relabel) to transform T1 into T2.
+  OPERATIONS:
+    Delete: Remove a node v; make v's children the children of v's parent.
+    Insert: Inverse of delete.
+    Relabel: Change the label of a node.
+  COST: Each operation has a non-negative cost. Total edit distance = sum of costs.
+  ALGORITHM: Dynamic programming over "keyroots" and LRKeyroots.
+    keyroot(T) = set of nodes k such that there is no node k' > k with lmost(k') = lmost(k),
+    where lmost(v) = leftmost leaf descendant of v.
+    Main recurrence: treedist(i, j) built from forestdist(i, j).
+    forestdist(i, j) = min of:
+      forestdist(lmost(i)-1, j) + deletion_cost  [delete node i]
+      forestdist(i, lmost(j)-1) + insertion_cost  [insert node j]
+      forestdist(lmost(i)-1, lmost(j)-1) + treedist(i, j)  [match forests]
+  COMPLEXITY: O(|T1|·|T2|·min(depth(T1),leaves(T1))·min(depth(T2),leaves(T2))) time,
+    O(|T1|·|T2|) space.
+  CONSTRAINT: Ordered trees only (sibling order matters). For unordered trees the problem
+    is NP-complete (Shasha & Zhang 1994, JACM).
+  JGRAPHT IMPLEMENTATION: ZhangShashaTreeEditDistance class in org.jgrapht.alg.similarity.
+  NOTE: RTED (Pawlik & Augsten 2012, arxiv:1201.0230) improves to O(|T1|·|T2|·min(path(T1),path(T2)))
+    worst case. APTED (Pawlik & Augsten 2015) further improves average case.
+<<<END>>>
+
+SOURCE
+id: 3
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: Identifying the Semantic and Textual Differences between Two Versions of a Program
+authors: Susan Horwitz
+year: 1990
+venue: Proceedings of ACM SIGPLAN '90 Conference on Programming Language Design and Implementation (PLDI), June 1990
+quality: PEER-REVIEWED
+url: https://pages.cs.wisc.edu/~horwitz/
+keywords: semantic differencing, program dependence graph, PDG, slicing, program versions, semantic equivalence, textual differences
+cites: Ferrante-Ottenstein-Warren 1987 (PDG), Weiser 1984 (slicing)
+cited_by: JDiff 2004, change-impact analysis surveys, Bates-Horwitz incremental testing 1993
+content:
+  CORE IDEA: Two programs P1 and P2 are semantically different if for some input, they
+    produce different output. Textual differences (different source text) may or may not
+    imply semantic differences.
+  REPRESENTATION: Uses Program Dependence Graphs (PDGs).
+    PDG nodes = statements + predicate expressions.
+    PDG edges = data dependence (def-use) + control dependence.
+  ALGORITHM:
+    1. Build PDGs for P1 and P2.
+    2. Identify textually changed statements by comparing ASTs.
+    3. For each changed statement s: compute forward slice of P1 from s and forward slice
+       of P2 from s. If slices differ, output is semantically different.
+    4. Unchanged statements surrounded by identical context → no semantic difference.
+  KEY INSIGHT: A statement s in P1 corresponds to statement s' in P2 (textually equivalent)
+    even if its dependence edges changed — the dependence edges encode which definitions
+    reach s, i.e., which values flow to it.
+  APPLICATION TO DIFF: "Which statements in P1 might produce different output in P2?"
+    = set of statements reachable via changed def-use / control-dep edges from textually
+    changed statements.
+  NOTE: This is the foundational paper for semantic (as opposed to textual) program diff.
+    Subsequent work: Bates & Horwitz 1993 (incremental testing using PDGs, POPL).
+<<<END>>>
+
+SOURCE
+id: 4
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: Interprocedural Slicing Using Dependence Graphs
+authors: Susan Horwitz, Thomas Reps, David Binkley
+year: 1990
+venue: ACM Transactions on Programming Languages and Systems, 12(1):26–60, January 1990
+quality: PEER-REVIEWED
+url: https://www.csa.iisc.ac.in/~raghavan/CleanedPav2011/horwitz-sdg-slicing-1990.pdf
+keywords: system dependence graph, SDG, PDG, interprocedural slicing, def-use, call graph, summary edges
+cites: Ferrante-Ottenstein-Warren 1987, Weiser 1984
+cited_by: Reps-Horwitz-Sagiv 1995 (IFDS), JDiff, nearly all interprocedural analysis literature
+content:
+  SDG = System Dependence Graph: collection of PDGs (one per procedure) + inter-procedure edges.
+  PDG for procedure p contains:
+    - Entry vertex
+    - Statement vertices (one per statement/predicate)
+    - Data dependence edges (def-use within procedure)
+    - Control dependence edges
+    - Summary edges: encode transitive effects of called procedures (def→use across call site)
+  SLICING ALGORITHM on SDG:
+    Phase 1: Traverse backward from slice criterion, following data+control+summary edges,
+      but NOT ascending call edges (avoids call-return confusion).
+    Phase 2: Traverse backward following all edge types including call edges.
+    Two-phase avoids counting paths that go up a call edge then down a different return edge.
+  RELEVANCE TO DIFF: The summary edges encode "which output variables of callee are affected
+    by which input parameters" — when a callee changes, summary edges must be recomputed.
+    This is exactly the interprocedural change propagation problem in pflow diff.
+<<<END>>>
+
+SOURCE
+id: 5
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: JDiff: A Differencing Technique and Tool for Object-Oriented Programs
+authors: Taweesap Apiwattanapong, Alessandro Orso, Mary Jean Harrold
+year: 2004/2006
+venue: ASE 2004; Automated Software Engineering journal 2006. DOI: 10.1007/s10515-006-0002-0
+quality: PEER-REVIEWED
+url: https://www.semanticscholar.org/paper/JDiff:-A-differencing-technique-and-tool-for-Apiwattanapong-Orso/caf7737b93748839ec1a8e8bfaccc14ba2385e4e
+keywords: JDiff, CFG differencing, ECFG, hammock, Java, OO programs, change impact, regression testing
+cites: Horwitz 1990, CFG literature
+cited_by: Change-impact analysis surveys, regression testing papers
+content:
+  REPRESENTATION: Extended CFG (ECFG) handles OO features: exceptions, polymorphism,
+    field accesses, virtual dispatch.
+    ECFG nodes = statements + predicates.
+    ECFG edges = control flow + exception edges + virtual dispatch edges.
+  HAMMOCK DECOMPOSITION:
+    A hammock H(s, e) = subgraph with single entry node s and single exit node e,
+    where all paths from entry to exit are contained in H.
+    Algorithm: Identify SCCs, then decompose into hammocks recursively.
+    Hammocks correspond to structured control flow: if/else, loops, try/catch blocks.
+  MATCHING ALGORITHM (between P1 and P2):
+    1. Match methods by signature (name + parameter types).
+    2. For each matched method pair, build ECFGs.
+    3. Reduce each ECFG to hammock tree.
+    4. Recursively compare corresponding hammocks top-down.
+    5. Two hammocks are "equivalent" if their node sequences and edge structures match.
+    6. If a hammock differs, classify as: INS, DEL, MOD (modified).
+  OUTPUT: Set of changed methods + changed hammocks within methods + changed statements.
+  EXCEPTION EDGES: Explicit modeling of throw→catch edges in ECFG.
+    A changed exception edge = "new exception path from X to finally handler".
+  CHANGE IMPACT: After differencing, propagate changes through call graph to find
+    all transitively affected methods.
+  TOOL: JDiff Java tool, available for download; used in regression test selection.
+<<<END>>>
+
+SOURCE
+id: 6
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: difftastic — Structural diff that understands syntax
+authors: Wilfred Hughes
+year: 2022–present
+venue: Open source tool, GitHub
+quality: CODE
+url: https://github.com/Wilfred/difftastic
+keywords: difftastic, tree-sitter, structural diff, Dijkstra, graph traversal, syntax-aware, 60+ languages
+cites: Autochrome (algorithm inspiration), tree-sitter
+cited_by: widely used in git workflows
+content:
+  PARSING PIPELINE:
+    Stage 1: tree-sitter parser → concrete syntax tree (CST).
+    Stage 2: CST → difftastic Syntax tree (simplified representation retaining
+      structural info needed for diffing; discards some CST detail).
+  DIFF ALGORITHM:
+    Treats tree comparison as graph traversal problem.
+    Graph nodes = (position in T1, position in T2).
+    Graph edges = possible operations: advance T1 (delete), advance T2 (insert), advance both (match).
+    Edge weights = cost of operation (0 for match, 1 for insert/delete).
+    Finds minimum cost path using Dijkstra's algorithm.
+    Result: sequence of matched/unmatched nodes across both trees.
+  NODE MATCHING: Two nodes match if they have the same type AND their contents are
+    "similar enough" (configurable threshold).
+    Delimiter nodes (brackets, braces) are matched pair-wise.
+  COMPARISON TO GUMTREE:
+    GumTree: greedy top-down + bottom-up, produces move operations.
+    difftastic: graph search on leaves, no explicit move operation (shows as delete+insert).
+    diffsitter: LCS on leaves only.
+    difftastic treats diff as graph search, avoids GumTree's quadratic worst case on large files.
+  LANGUAGE SUPPORT: 60+ languages via tree-sitter grammars.
+  SOURCE: src/parse/tree_sitter_parser.rs (parser), src/diff/ (algorithm)
+  MANUAL: https://difftastic.wilfred.me.uk/tree_diffing.html
+  NOTE: No "move" operation — only insert/delete/match. Moves appear as delete+insert pair.
+<<<END>>>
+
+SOURCE
+id: 7
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: diffsitter — Tree-sitter based AST difftool for semantic diffs
+authors: Afnan Enayet
+year: 2020–present
+venue: Open source tool, GitHub
+quality: CODE
+url: https://github.com/afnanenayet/diffsitter
+keywords: diffsitter, tree-sitter, AST diff, LCS, Rust, semantic diff, leaf matching
+cites: []
+cited_by: []
+content:
+  LANGUAGE: Rust. MSRV 1.85.1, edition 2024.
+  APPROACH: Computes diff on AST of file rather than text.
+    Uses tree-sitter parsers for parsing.
+    MATCHING: Applies longest-common-subsequence (LCS) on syntax tree LEAVES
+      (not internal nodes). This differs from GumTree (full subtree) and difftastic (graph search).
+  GRAMMARS: Either compiled statically into binary, or loaded as dynamic libraries
+    (libtree-sitter-{lang}.{ext}).
+  FEATURE: Includes MCP server exposing tree-sitter AST navigation as tools for AI coding assistants.
+  BUILD: Requires Rust toolchain + C99+/C++14+ compilers (for tree-sitter grammars) + git submodules.
+  LIMITATION: LCS on leaves does not capture structural moves or renames.
+  CARGO.TOML: https://github.com/afnanenayet/diffsitter/blob/main/Cargo.toml
+<<<END>>>
+
+SOURCE
+id: 8
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: SemanticDiff — Language-aware diff for VS Code and GitHub
+authors: SemanticDiff team
+year: 2022–present
+venue: Commercial tool
+quality: INDUSTRY
+url: https://semanticdiff.com/
+keywords: SemanticDiff, AST diff, VS Code extension, refactoring detection, whitespace-invariant, Python, Rust, Java, C#, TypeScript
+cites: []
+cited_by: []
+content:
+  PIPELINE (3 stages):
+    1. Parse old and new code → AST.
+    2. Compare ASTs: verify that structurally different-looking statements are semantically
+       identical (using AST equality not text equality).
+    3. Generate visual diff output: align old/new source using node mapping.
+       Unmatched old nodes → marked deleted. Unmatched new nodes → marked inserted.
+  FEATURES:
+    - Hides irrelevant changes: whitespace, optional commas, unnecessary parentheses.
+    - Detects moved code, renames, refactorings.
+    - Supports: Python, Rust, Java, C#, TypeScript, and more.
+  DIFFERENTIATOR: "Programming language aware diff that distinguishes between relevant
+    and irrelevant changes."
+  INTEGRATION: VS Code extension + GitHub integration.
+<<<END>>>
+
+SOURCE
+id: 9
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: A Novel Refactoring and Semantic Aware AST Differencing Tool
+authors: Nikolaos Tsantalis et al.
+year: 2024
+venue: ACM Transactions on Software Engineering and Methodology. DOI: 10.1145/3696002
+quality: PEER-REVIEWED
+url: https://arxiv.org/html/2403.05939
+keywords: AST differencing, refactoring awareness, RefactoringMiner, multi-mapping, semantic compatibility, commit-level diff
+cites: GumTree 2014, RefactoringMiner
+cited_by: []
+content:
+  FIVE LIMITATIONS ADDRESSED:
+    1. Lacking multi-mapping support (1:N node mappings).
+    2. Matching semantically incompatible AST nodes (e.g., matching a method call
+       to a variable reference when they serve different roles).
+    3. Ignoring language clues (e.g., method signatures, type information).
+    4. Lacking refactoring awareness (renames/moves confuse existing matchers).
+    5. Lacking commit-level diff support (single file vs. multi-file commits).
+  APPROACH:
+    Based on RefactoringMiner: detects refactoring instances first (rename, move, extract method, etc.).
+    Improved RefactoringMiner for higher statement mapping accuracy.
+    Then generates AST diff for a given commit/PR based on refactoring instances
+    and pairs of matched program element declarations.
+  BENCHMARK: First benchmark of AST node mappings:
+    800 bug-fixing commits + 188 refactoring commits.
+  RESULTS: "Considerably higher precision and recall, especially for refactoring commits,
+    with execution time comparable to faster tools."
+  RELEVANCE: For pflow diff — handle renames/moves of functions/variables as semantic
+    equivalences, not as delete+insert (which would falsely report all flow changed).
+<<<END>>>
+
+SOURCE
+id: 10
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: Incremental Data Flow Analysis (Ryder & Paull 1988)
+authors: Barbara G. Ryder, Marvin C. Paull
+year: 1988
+venue: ACM Transactions on Programming Languages and Systems, 10(1):1–50
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1145/42192.42193
+keywords: incremental dataflow, IDFA, live variables, reaching definitions, ud-chains, worklist, change propagation
+cites: Kildall 1973, Aho-Ullman dataflow
+cited_by: Common Threads survey 2024, subsequent incremental analysis papers
+content:
+  CORE PROBLEM: After a small change to program P to get P', recompute dataflow facts
+    using previously computed results. Avoid full reanalysis.
+  ALGORITHM OVERVIEW:
+    1. Identify changed nodes in CFG (insertions, deletions, modifications of basic blocks).
+    2. Initialize change set ΔX = set of nodes whose dataflow facts are invalidated.
+    3. Propagate changes through CFG using worklist algorithm:
+       For each node in worklist: recompute dataflow function. If result changed, add
+       successors (for forward analysis) or predecessors (for backward analysis) to worklist.
+    4. Terminate when worklist empty (fixed point reached for changed region).
+  KEY INSIGHT: Only nodes reachable from changed nodes (in dataflow propagation order)
+    need recomputation. Unchanged nodes with unchanged inputs → skip.
+  ANALYSES COVERED: Reaching definitions, live variables, available expressions, du-chains.
+  COMPLEXITY: O(k * |ΔG|) where k = depth of dataflow lattice, |ΔG| = size of changed subgraph.
+    Much better than O(k * |G|) for small changes.
+  RELATION TO pflow diff: The same incremental-recomputation structure applies to
+    recomputing which def-use edges changed after an edit.
+<<<END>>>
+
+SOURCE
+id: 11
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: Common Threads in Incremental Data Flow Analysis: A Comprehensive Survey
+authors: (authors not confirmed — search result only showed ACM URL)
+year: 2024 (approx)
+venue: ACM Computing Surveys. DOI: 10.1145/3768155
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1145/3768155
+keywords: incremental dataflow, survey, IDFA, demand-driven, worklist, change propagation, recomputation
+cites: Ryder-Paull 1988, numerous IDFA papers
+cited_by: []
+content:
+  COVERAGE: Survey of incremental dataflow analysis techniques.
+  KEY DISTINCTIONS:
+    - Incremental analysis: updates analysis results based on prior computed facts.
+    - Demand-driven analysis: computes only what is queried; does not use prior results.
+    - Combined: incremental + demand-driven (e.g., incremental points-to via Datalog).
+  CLASSIFICATION:
+    - Pure incremental: Ryder-Paull-style worklist propagation from changed nodes.
+    - Change-based: track edit deltas (inserted/deleted/modified nodes) explicitly.
+    - Snapshot-based: compare two independent full analyses; report diffs.
+  NOTE: Paper behind ACM paywall; full details not retrieved (403 on fetch attempt).
+  RELEVANCE: Comprehensive reference for choosing incremental strategy in pflow diff.
+<<<END>>>
+
+SOURCE
+id: 12
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: Infer Differential Mode (infer reportdiff)
+authors: Facebook / Meta (Infer team)
+year: 2016–present
+venue: Official documentation
+quality: DOCS
+url: https://fbinfer.com/docs/steps-for-ci/
+keywords: Infer, differential analysis, reportdiff, --reactive, --changed-files-index, introduced.json, fixed.json, CI integration
+cites: []
+cited_by: []
+content:
+  WORKFLOW:
+    Step 1 (feature branch): infer capture -- <build-cmd>
+    Step 2 (main branch): infer capture --reactive --mark-if-unchanged -- <build-cmd>
+      --reactive: prevents deletion of infer-out/; enables incremental analysis.
+      --mark-if-unchanged: marks files that haven't changed to skip re-analysis.
+    Step 3: Get changed files:
+      git diff --name-only origin/feature..origin/main > index.txt
+    Step 4: infer analyze --changed-files-index index.txt
+      Analyzes only modified files + their direct dependents.
+    Step 5: infer analyze --incremental-analysis --changed-files-index index.txt
+      Incremental mode: further restricts to changed procedures.
+    Step 6: infer reportdiff --report-current report-feature.json
+                             --report-previous infer-out/report.json
+  OUTPUT (infer-out/differential/):
+    introduced.json: bugs found in feature branch NOT in main.
+    fixed.json: bugs in main NOT in feature branch.
+    preexisting.json: bugs in both branches.
+  CONFIG: .inferconfig — JSON config file; INFER_ARGS env var overrides .inferconfig;
+    command line options override INFER_ARGS.
+  KEY DESIGN: Compares bug REPORTS between versions (not raw analysis facts).
+    Does not directly expose CFG/PDG deltas — only bug-level diffs.
+  RELEVANCE: Model for pflow diff output: report "introduced paths/edges" vs
+    "fixed paths/edges" vs "preexisting" analogously.
+<<<END>>>
+
+SOURCE
+id: 13
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: CodeQL Incremental Security Analysis for Pull Requests
+authors: GitHub Security Lab
+year: 2025
+venue: GitHub Changelog, May 28 2025
+quality: INDUSTRY
+url: https://github.blog/changelog/2025-05-28-incremental-security-analysis-makes-codeql-up-to-20-faster-in-pull-requests/
+keywords: CodeQL, diff-informed, incremental analysis, pull request, changed lines, database caching, JavaScript, TypeScript, Java, Python, Ruby
+cites: []
+cited_by: []
+content:
+  PERFORMANCE: Up to 20% faster overall. JavaScript/TypeScript scans most impacted: up to 58% faster.
+  MECHANISM: "Only analyzes new or changed code" rather than scanning entire codebase.
+    Generates a CodeQL database representing new/changed code.
+    Combines it with a cached database for entire codebase.
+  DIFF-INFORMED ANALYSIS (earlier feature, now incremental):
+    Retrieves changes between base and head branches.
+    Calculates line ranges that were added or modified.
+    Creates a CodeQL extension pack for focused analysis.
+    Configures queries to prioritize results in changed code.
+  API BEHAVIOR CHANGE: When using code scanning API with `pr` query parameter,
+    now "only returns new alerts found within the changed code."
+    Previously: returned all codebase alerts, filtered downstream.
+  SUPPORTED LANGUAGES (incremental): JavaScript, TypeScript, Java, Ruby, Python.
+    Future expansion planned.
+  AVAILABILITY: Default-on at github.com as of May 28, 2025.
+    CodeQL CLI support coming later.
+    GitHub Enterprise Server: starting with version 3.19.
+  RELATED: GitHub Changelog 2026-03-24 "Faster incremental analysis with CodeQL in pull requests":
+    https://github.blog/changelog/2026-03-24-faster-incremental-analysis-with-codeql-in-pull-requests/
+  RELEVANCE: Shows production approach — incremental DB + cache + diff-range filtering.
+<<<END>>>
+
+SOURCE
+id: 14
+ts: 2026-05-29T00:00:00Z
+relevance: HIGH
+title: reviewdog — Automated code review tool with diff-scoped annotations
+authors: haya14busa (Haya Sugita) + community
+year: 2016–present
+venue: Open source tool, GitHub
+quality: CODE
+url: https://github.com/reviewdog/reviewdog
+keywords: reviewdog, diff annotation, CI, linter integration, GitHub Actions, errorformat, RDFormat, diff-range filtering
+cites: []
+cited_by: []
+content:
+  CORE MECHANISM:
+    Consumes linter output (via errorformat strings, named formats, or RDFormat proto).
+    Compares linter findings against the diff of current commit/PR.
+    Posts comments ONLY for lines present in the diff (diff-range filtering).
+  FILTER MODES:
+    --filter-mode=added: only report on added/modified lines.
+    --filter-mode=diff_context: report on lines in diff context.
+    --filter-mode=file: report on any line in changed files.
+    --filter-mode=nofilter: report everything.
+  OUTPUT FORMATS: GitHub PR review comments, GitHub Checks annotations, GitLab MR notes,
+    Bitbucket annotations, local stderr.
+  REPORTERS: github-pr-check (GitHub Checks API), github-pr-review (PR comments),
+    github-annotations, local, etc.
+  CONFIG: .reviewdog.yml — defines runners, formats, commands.
+  GITHUB ACTIONS: Uses GITHUB_TOKEN for auth. v0.9.13+ supports GH Actions natively.
+  RELEVANCE: Shows how to take analysis output and scope it to changed lines for PR review.
+    pflow diff output could be fed to reviewdog to post CFG delta annotations on PRs.
+<<<END>>>
+
+
+SOURCE
+id: 15
+ts: 2026-05-29T00:01:00Z
+relevance: HIGH
+title: GumTree Algorithm — Detailed Technical Notes (Phase-by-Phase)
+authors: Jean-Rémy Falleri et al. (documented by hoblovski blog post)
+year: 2018 (blog post of 2014 paper)
+venue: BLOG post summarizing ASE 2014 paper
+quality: BLOG
+url: https://hoblovski.github.io/2018/05/31/GumTree.html
+keywords: GumTree, dice coefficient, anchor mapping, container mapping, recovery mapping, isomorphism hash, opt algorithm
+cites: GumTree ASE 2014
+cited_by: []
+content:
+  AST STRUCTURE: Ordered n-ary trees. Each node has label (type) + value (string).
+  
+  SIMILARITY METRIC — Dice Coefficient:
+    dice(t1, t2, M) = 2|M| / (|t1| + |t2|)
+    where M = current mapping set, |t| = number of descendant leaves in subtree t.
+    Range: [0, 1]. Used in phases 2 and 3 to select best match candidate.
+  
+  PHASE 1 — Anchor Mapping (Top-Down Greedy):
+    Only considers subtrees with height >= minHeight (default: > 1, i.e., not leaf nodes).
+    Uses hash fingerprinting for isomorphism detection:
+      H(s) = f(K, H(t1), H(t2), ..., H(tn))
+      where K = root node hash, H(ti) = child hashes, f = MD5 or SHA1-based combiner.
+      Isomorphic subtrees have identical hashes → O(1) comparison.
+    For unique (t1, t2) isomorphic pairs: add directly to M.
+    For ambiguous cases (multiple candidates): select pair with highest
+      dice(parent(t1), parent(t2), M) — uses parent context to break ties.
+    Result: M contains mappings for large unchanged subtrees.
+  
+  PHASE 2 — Container Mapping (Bottom-Up):
+    For each node t1 in T1 (post-order): find best matching t2 in T2 such that:
+      - t1, t2 have same type/label.
+      - t1 does not already have anchor mapping.
+      - t1 has at least one descendant with anchor mapping.
+    Selection: t2 = argmax dice(t1, t2, M).
+    Threshold: only add to M if dice > minDice (default: 0.5).
+    Result: M extended with "container" node matches.
+  
+  PHASE 3 — Recovery Mapping (Bottom-Up using opt):
+    For each pair (t1, t2) in M from phase 2: run opt algorithm on their
+    unmatched descendants.
+    opt = O(n^3) optimal tree edit distance WITHOUT move operations.
+    Adds fine-grained mappings for remaining unmatched nodes.
+  
+  EDIT SCRIPT GENERATION:
+    From M, produces edit script:
+      INS(t2, p2, k): Insert node t2 as k-th child of p2.
+      DEL(t1): Delete node t1.
+      MOV(t1, p2, k): Move t1 to be k-th child of p2.
+      UPD(t1, v2): Update label/value of t1 to v2.
+    Algorithm: BFS on T2, for each node check if matched/unmatched/moved/updated.
+  
+  DESIGN PHILOSOPHY: "Rather than finding algorithmically optimal edit scripts,
+    the approach aims to reflect developer intent through engineering heuristics."
+    — Exact quote from source blog post.
+<<<END>>>
+
+SOURCE
+id: 16
+ts: 2026-05-29T00:01:00Z
+relevance: HIGH
+title: SymDiff — Language-Agnostic Semantic Diff Tool for Imperative Programs
+authors: Shuvendu K. Lahiri, Chris Hawblitzel, Ming Kawaguchi, Henrique Rebelo
+year: 2012
+venue: CAV 2012 (International Conference on Computer Aided Verification). Springer LNCS 7358, pp. 567–574.
+quality: PEER-REVIEWED
+url: https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/paper-44.pdf
+keywords: SymDiff, semantic diff, Boogie, equivalence checking, behavioral difference, SMT, counterexample, language-agnostic
+cites: Boogie, Z3 SMT solver
+cited_by: []
+content:
+  APPROACH: Equivalence checking + semantic (behavioral) differencing.
+    Operates on Boogie intermediate verification language (IVL).
+    Source language translations exist for: C, C#, x86, others.
+  
+  SEMANTIC EQUIVALENCE DEFINITION:
+    Two procedures P and P' are semantically equivalent iff for ALL inputs,
+    they produce the same outputs and have the same termination behavior.
+  
+  ALGORITHM:
+    1. Translate P and P' to Boogie IVL.
+    2. Create a "product program" that runs both in lockstep.
+    3. Use SMT solver (Z3) to check if product program can reach a state where outputs differ.
+    4. If SAT: extract concrete counterexample (witness input showing behavioral difference).
+       If UNSAT: programs are semantically equivalent.
+  
+  OUTPUT: If behavioral difference found:
+    - Concrete input values demonstrating the difference.
+    - Corresponding execution paths highlighted in source code.
+  
+  LOCKSTEP PRODUCT PROGRAM: For procedures P1 and P2 with shared variables:
+    Rename variables: x → x1 (from P1), x → x2 (from P2).
+    Assert: inputs are equal (x1_init = x2_init).
+    Check: ∃ path where output1 ≠ output2.
+  
+  LIMITATIONS: Requires translation to Boogie (non-trivial for Python/JS).
+    Bounded verification (may miss differences in unbounded loops).
+    Expensive for large procedures (SMT solver invocation).
+  
+  RELEVANCE TO pflow diff: SymDiff represents the "semantic oracle" end of the spectrum.
+    pflow diff at structural level (CFG/PDG deltas) vs SymDiff at semantic level
+    (behavioral equivalence). Complementary approaches.
+<<<END>>>
+
+SOURCE
+id: 17
+ts: 2026-05-29T00:01:00Z
+relevance: HIGH
+title: Scaling Static Analyses at Facebook (Infer compositional/incremental model)
+authors: Dino Distefano, Manuel Fahndrich, Francesco Logozzo, Peter O'Hearn
+year: 2019
+venue: Communications of the ACM, 62(8):62–70, August 2019
+quality: PEER-REVIEWED
+url: https://cacm.acm.org/research/scaling-static-analyses-at-facebook/
+keywords: Infer, compositional analysis, bi-abduction, incremental, procedure summaries, Facebook, code review, separation logic
+cites: O'Hearn 2012 (bi-abduction), Reynolds 2002 (separation logic)
+cited_by: Infer documentation, incremental analysis papers
+content:
+  KEY INSIGHT: "Compositional analyses are naturally incremental — changing one procedure
+    does not necessitate re-analyzing all other procedures."
+  
+  BI-ABDUCTION (Infer's core analysis):
+    For each procedure p: compute summary (precondition, postcondition) independently of callers.
+    Summary = separation logic spec: {pre} p {post}.
+    At call sites: apply summary via frame rule.
+    When p changes: recompute only p's summary + summaries of direct callers (if call signature changes).
+  
+  INCREMENTAL MODEL at Facebook:
+    Infer integrated with code review system.
+    "Even a linear time analysis would be too slow if it had to operate on the whole program
+    when presented with a code change."
+    Only changed procedures + their transitive callers are re-analyzed.
+    Procedure summaries are cached and reused for unchanged procedures.
+  
+  PROCEDURE MATCHING ACROSS VERSIONS:
+    Procedures matched by (fully-qualified name, parameter types).
+    Body changes → invalidate summary → recompute.
+    No body change → reuse cached summary.
+  
+  DIFF-LEVEL FOCUS: Infer reports only bugs in changed code in differential mode.
+    (See record id:12 for reportdiff details.)
+  
+  RELEVANCE: The summary-caching + invalidation model is directly applicable to pflow diff:
+    cache CFG/PDG for each procedure; on change, recompute only changed procedure + callers.
+<<<END>>>
+
+SOURCE
+id: 18
+ts: 2026-05-29T00:01:00Z
+relevance: HIGH
+title: Interprocedural Semantic Change-Impact Analysis using Equivalence Relations
+authors: (from arXiv:1609.08734 — authors not retrieved due to PDF binary)
+year: 2016
+venue: PREPRINT arXiv:1609.08734
+quality: PREPRINT
+url: https://arxiv.org/pdf/1609.08734
+keywords: change impact analysis, CFG, equivalence relation, semantic equivalence, changed/unchanged regions, def-use, dataflow
+cites: []
+cited_by: []
+content:
+  NOTE: PDF binary — full content not extractable. Metadata from search snippets only.
+  
+  TOPIC: Interprocedural semantic change-impact analysis using equivalence relations.
+  KEY CLAIM (from search snippet): "Equivalence relations can be leveraged to make
+    dataflow-based CIA aware of the change semantics, thereby improving precision in the
+    presence of semantics-preserving changes."
+  
+  CORE IDEA: Standard change impact analysis (CIA) is conservative: any textual change
+    triggers impact propagation. If a change is semantics-preserving (e.g., refactoring),
+    equivalence relations can prune false positives.
+  
+  APPLICATION: For pflow diff — distinguish "this change rewrote control flow but produced
+    equivalent CFG paths" (no real delta) vs. "this change added a new path."
+    arXiv URL for full paper: https://arxiv.org/abs/1609.08734
+<<<END>>>
+
+SOURCE
+id: 19
+ts: 2026-05-29T00:01:00Z
+relevance: HIGH
+title: SMT-Based Verification of Program Changes through Summary Repair
+authors: (from PMC 10564826 — authors not retrieved)
+year: 2023 (approx, PMC article)
+venue: PMC article
+quality: PEER-REVIEWED
+url: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10564826/
+keywords: program change, function summary, summary repair, SMT, bounded verification, CFG delta, regression
+cites: []
+cited_by: []
+content:
+  NOTE: Not fetched directly; metadata from search snippets only.
+  TOPIC: Reuses computational history (function summaries) of previous program version.
+    Summaries = over-approximations of bounded program behaviors.
+    On change: "repair" summaries to maximize reusability for subsequent runs.
+  APPROACH: Rather than recompute from scratch, repair the existing summary to
+    account for the CFG delta introduced by the change.
+  RELEVANCE: The "summary repair" pattern is an efficient alternative to full
+    recomputation when diffs are small.
+<<<END>>>
+

@@ -1,0 +1,2309 @@
+MINER_DUMP
+topic: Control/Data-Flow-Based Bug Detectors for Python Static Analysis (pflow check command)
+depth: 2
+date: 2026-05-29
+status: IN_PROGRESS
+record_count: 0
+focus: CFG + dominators/post-dominators + reaching-definitions + def-use detectors shipped in real Python static analyzers
+<<<END>>>
+
+SOURCE
+id: 1
+ts: 2026-05-29T10:00:00Z
+relevance: HIGH
+title: pyflakes F821 - Undefined Name
+authors: PyCQA
+year: 2024
+venue: pyflakes (PyCQA)
+quality: CODE
+url: https://www.flake8rules.com/rules/F821.html
+keywords: undefined-name, unbound variable, scope analysis, name resolution
+cites:
+cited_by:
+content:
+  RULE ID: F821 (pyflakes), re-emitted as F821 in flake8
+  WHAT IT FLAGS: Reference to a name that is not defined anywhere in the accessible scope at
+    module or function level. Catches global undefined names. Does NOT catch the
+    use-before-assignment case for locals (that is F823). Distinguishes undefined (never
+    defined in scope) from possibly-unbound (defined on some paths only).
+  FLOW PROPERTY: Scope-level name binding analysis. Pyflakes walks the AST building a
+    Scope object (FunctionScope, ModuleScope, ClassScope) tracking all Binding and
+    NameBinding objects. A USE of a name with no corresponding Binding in any enclosing
+    scope triggers F821. This is NOT a full CFG/reaching-definitions analysis — it is
+    scope-level binding presence check only.
+  IMPLEMENTATION: pyflakes/checker.py — Checker class builds a scope stack via
+    visitFunctionDef, visitClassDef etc.; Binding subclasses (Importation,
+    Argument, FunctionDefinition, NameBinding) are registered on scope entry;
+    after scope completes, unused and undefined bindings are reported.
+  FALSE POSITIVES: Dynamic attribute injection (setattr, __dict__ manipulation),
+    __all__ exports, star imports (from mod import *) prevent pyflakes from
+    resolving names — common source of F821 false positives. IPython magic
+    expressions also cause false positives (GitHub issue #786).
+  CLASSIFICATION: AST-LINT (scope binding presence, not CFG-based). No reaching
+    definitions traversal — a name either exists in scope or it doesn't.
+  TOOLS: pyflakes (primary), flake8 (via pyflakes plugin), ruff (re-implements as F821)
+<<<END>>>
+
+SOURCE
+id: 2
+ts: 2026-05-29T10:01:00Z
+relevance: HIGH
+title: pyflakes F823 - Local Variable Referenced Before Assignment
+authors: PyCQA
+year: 2024
+venue: pyflakes (PyCQA)
+quality: CODE
+url: https://www.flake8rules.com/rules/F823.html
+keywords: local variable, referenced before assignment, unbound, use-before-def
+cites:
+cited_by:
+content:
+  RULE ID: F823 (pyflakes) / E0601 used-before-assignment (pylint)
+  WHAT IT FLAGS: A local variable (one that is assigned anywhere in the function body)
+    is READ before any assignment to it. Python's scoping rules make any variable
+    assigned in a function body a local; reading it before the assignment causes
+    UnboundLocalError at runtime. Classic case: variable is conditionally assigned
+    in one branch but read unconditionally before the branch.
+  FLOW PROPERTY: Requires intra-procedural reaching-definitions or dominance analysis:
+    "every path from function entry to the USE must pass through a DEF." Pyflakes'
+    implementation is scope-only: it detects the trivial case where a variable is
+    assigned after its first use in linear code. The "possibly-unbound" variant
+    (conditional branches, try/except, finally) is detected separately as a warning
+    (not F823) by pyflakes and more rigorously by pyright/mypy.
+  SPECIAL CASE — finally/except: Variable assigned in try-body, read in finally:
+    if the try raises before the assignment, the read in finally will fail with
+    UnboundLocalError. This is the hardest variant to detect. Pyflakes issue #236 /
+    mypy issue #17387 track this gap. Pyright has reportPossiblyUnbound for it.
+  SPECIAL CASE — except variable erasure (Python 3): In Python 3, the `as e` name
+    in `except Exception as e` is deleted after the except block. Reading `e` after
+    the block raises NameError. Pyflakes issue #345 tracks detection of this case.
+  FALSE POSITIVES: exec/eval-based dynamic assignment, walrus operator inside
+    compound expressions (issue #3275 in pylint), type annotation-only lines.
+  CLASSIFICATION: FLOW-NATIVE (requires reaching definitions or dominator analysis
+    to handle the conditional/branching case correctly).
+  TOOLS: pyflakes (F823, limited to linear case), pylint (E0601 used-before-assignment,
+    more CFG-aware), pyright (reportUnboundVariable / reportPossiblyUnbound),
+    mypy (--enable-error-code possibly-undefined), CodeQL (py/uninitialized-local-variable)
+<<<END>>>
+
+SOURCE
+id: 3
+ts: 2026-05-29T10:02:00Z
+relevance: HIGH
+title: pyright reportPossiblyUnbound / reportUnboundVariable
+authors: Microsoft (Eric Traut)
+year: 2024
+venue: microsoft/pyright GitHub
+quality: DOCS
+url: https://raw.githubusercontent.com/microsoft/pyright/main/docs/configuration.md
+keywords: possibly-unbound, unbound variable, type narrowing, dataflow, pyright, pylance
+cites:
+cited_by:
+content:
+  RULE IDs:
+    reportUnboundVariable — "Generate or suppress diagnostics for unbound variables."
+      Default: "error" in Basic mode and above.
+    reportPossiblyUnboundVariable — "Generate or suppress diagnostics for variables that
+      are possibly unbound on some code paths." Default: "error" in Standard mode and above.
+  WHAT THEY FLAG:
+    reportUnboundVariable: variable is NEVER assigned before use on any path.
+    reportPossiblyUnboundVariable: variable is assigned on SOME but not ALL paths leading
+      to the use. Triggers on: variables defined only inside if/elif branches without
+      else, variables assigned in try but read in finally (before assignment executes),
+      variables defined in for/while body but read after loop (loop might not execute).
+  FLOW PROPERTY: Full intra-procedural dataflow analysis with type narrowing. Pyright
+    builds a CFG and propagates type state (including binding state) through join nodes.
+    At a join point after a conditional, a variable's state is the INTERSECTION of what
+    is known on each incoming edge. If any incoming edge has the variable unbound, the
+    post-join state is "possibly-unbound."
+  FALSE POSITIVES DOCUMENTED: 
+    - Variables assigned in with-blocks sometimes reported as possibly-unbound in certain
+      context managers (GitHub issue #7009). 
+    - for-loops "that run at least once" — pyright conservatively treats the loop body as
+      potentially not executing (discussion #2033).
+    - Exhaustive elif chains without explicit else — pyright may not recognize exhaustive
+      coverage via isinstance or Literal narrowing (issue #7396).
+    - pd.DataFrame isinstance narrowing not recognized (issue #2540).
+  CLASSIFICATION: FLOW-NATIVE. Pyright is the most CFG-complete of the commonly used
+    Python linters for this detector.
+  RELATED RULES:
+    reportOptionalSubscript, reportOptionalMemberAccess, reportOptionalCall,
+    reportOptionalIterable, reportOptionalContextManager, reportOptionalOperand —
+    all default to "error" in Basic mode; catch None-dereference patterns on Optional-typed
+    variables.
+  TOOLS: pyright (primary), pylance (VS Code extension built on pyright)
+<<<END>>>
+
+SOURCE
+id: 4
+ts: 2026-05-29T10:03:00Z
+relevance: HIGH
+title: pylint E0601 used-before-assignment
+authors: pylint-dev
+year: 2024
+venue: pylint readthedocs
+quality: DOCS
+url: https://pylint.readthedocs.io/en/latest/user_guide/messages/error/used-before-assignment.html
+keywords: used-before-assignment, unbound, local variable, CFG, pylint E0601
+cites:
+cited_by:
+content:
+  RULE ID: E0601
+  WHAT IT FLAGS: A local variable is used (read) before it is assigned. Includes
+    use of += on an uninitialized local variable. Checked by the variables checker.
+  FLOW PROPERTY: Intra-procedural control flow analysis. Pylint builds a CFG and
+    checks that every use of a local variable has a reaching definition on all paths
+    from function entry to the use site. More complete than pyflakes' linear scan.
+  KNOWN FALSE POSITIVES:
+    - Variables defined in both branches of TYPE_CHECKING conditionals (issue #7368)
+    - Assignment expressions (walrus :=) used within the same tuple (issue #3275)
+    - Nested try blocks that exhaustively define/raise/return (issue #7350)
+    - Type annotations that take assignment via nonlocal (issue #5394)
+    - Type hints (issue #8110)
+  KNOWN FALSE NEGATIVES:
+    - Variable only defined in except clause, read after try/except — false negative
+      reported (issue #4761)
+  DIFFERS FROM PYFLAKES: Pylint's analysis is more CFG-aware and handles complex
+    branching scenarios better than pyflakes' simpler scope-based check.
+  CLASSIFICATION: FLOW-NATIVE (CFG + reaching definitions)
+  TOOLS: pylint (E0601)
+<<<END>>>
+
+SOURCE
+id: 5
+ts: 2026-05-29T10:04:00Z
+relevance: HIGH
+title: pylint E0606 possibly-used-before-assignment
+authors: pylint-dev
+year: 2024
+venue: pylint readthedocs
+quality: DOCS
+url: https://pylint.pycqa.org/en/stable/user_guide/messages/error/possibly-used-before-assignment.html
+keywords: possibly-used-before-assignment, conditional assignment, unbound, E0606
+cites:
+cited_by:
+content:
+  RULE ID: E0606
+  MESSAGE TEXT: "Possibly using variable %r before assignment"
+  WHAT IT FLAGS: A local variable is accessed before its assignment in at least one
+    branch of conditional logic (if/else). Detects: variable assigned only inside
+    an if-block but referenced after the conditional; variables assigned in some
+    branches of if/else but not all; missing initialization before conditional.
+  FLOW PROPERTY: Control flow path analysis — must verify that a variable has a
+    definition on EVERY possible execution path leading to its use. Requires join-point
+    analysis: if any incoming CFG edge lacks a definition, the variable is "possibly
+    unbound" at the join point.
+  FIX PATTERN: Initialize variable before conditional block to ensure definition on
+    all code paths.
+  CLASSIFICATION: FLOW-NATIVE (requires CFG join-point analysis)
+  TOOLS: pylint (E0606)
+<<<END>>>
+
+SOURCE
+id: 6
+ts: 2026-05-29T10:05:00Z
+relevance: HIGH
+title: pylint W0101 unreachable
+authors: pylint-dev
+year: 2024
+venue: pylint readthedocs
+quality: DOCS
+url: https://pylint.pycqa.org/en/stable/user_guide/messages/warning/unreachable.html
+keywords: unreachable code, dead code, W0101, return, raise, pylint
+cites:
+cited_by:
+content:
+  RULE ID: W0101 (unreachable)
+  WHAT IT FLAGS: Code that appears after a return or raise statement in the same block,
+    making it impossible to execute. Created by pylint's basic checker.
+    Example: `return True; print("Hello")` — the print is flagged.
+  FLOW PROPERTY: Simple intra-block post-terminator detection. After encountering a
+    return/raise in a basic block, any subsequent statement in the same block is unreachable.
+    This is a SHALLOW CFG property: it does not analyze unreachability through conditional
+    branches or multiple basic blocks — it only catches direct post-return/raise statements
+    within the same compound statement.
+  SCOPE: Fires on code after return or raise. Does NOT fire on dead code that is
+    unreachable because of constant conditions (that would require constant propagation).
+    Does NOT cover break/continue unreachability between blocks.
+  FALSE POSITIVES: Minimal for the simple case. Does not flag generator-style patterns
+    that use raise StopIteration after yield (issue #8909 tracks false-positive for
+    error-emitting generators).
+  CLASSIFICATION: FLOW-NATIVE (basic CFG reachability — shallow variant)
+  TOOLS: pylint (W0101); CodeQL (py/unreachable-statement, more comprehensive);
+    vulture (detects unreachable code as part of dead code analysis)
+<<<END>>>
+
+SOURCE
+id: 7
+ts: 2026-05-29T10:06:00Z
+relevance: HIGH
+title: CodeQL py/unreachable-statement
+authors: GitHub Security Lab
+year: 2024
+venue: CodeQL query help (codeql.github.com)
+quality: DOCS
+url: https://codeql.github.com/codeql-query-help/python/py-unreachable-statement/
+keywords: unreachable code, dead code, CodeQL, CFG, CWE-561
+cites:
+cited_by:
+content:
+  QUERY ID: py/unreachable-statement
+  SEVERITY: Warning
+  PRECISION: Very-high
+  TAGS: quality, maintainability, useless-code, CWE-561
+  WHAT IT FLAGS: Code statements that cannot be executed during program flow, typically
+    appearing after control flow statements like return, break, or continue.
+  FLOW PROPERTY: CodeQL builds a full Python CFG where each AstNode maps to zero, one,
+    or many ControlFlowNodes. An AstNode with ZERO ControlFlowNodes is unreachable.
+    "Any AstNode that is unreachable has no paths flowing through it. Therefore, any
+    AstNode without a corresponding ControlFlowNode is unreachable." The query targets
+    statement nodes specifically (not all AstNodes) to avoid false positives from
+    modules with no source code representation.
+  EXAMPLE:
+    def my_div(x, y):
+        return math.floor(x / y)
+        remainder = x - math.floor(x / y) * y  # unreachable — flagged
+  DOCUMENTATION NOTE: "This may indicate dead code, or some other error."
+  CFG IMPLEMENTATION: ControlFlowNode/AstNode mapping in CodeQL Python library.
+    BasicBlock analysis available for aggregated reachability queries.
+    strictlyReaches() predicate for inter-block reachability.
+  CLASSIFICATION: FLOW-NATIVE (full CFG reachability)
+  TOOLS: CodeQL (py/unreachable-statement); pylint (W0101, partial); vulture (partial)
+<<<END>>>
+
+SOURCE
+id: 8
+ts: 2026-05-29T10:07:00Z
+relevance: HIGH
+title: pylint W0631 undefined-loop-variable
+authors: pylint-dev
+year: 2024
+venue: pylint readthedocs
+quality: DOCS
+url: https://pylint.readthedocs.io/en/stable/user_guide/messages/warning/undefined-loop-variable.html
+keywords: undefined-loop-variable, loop variable, for loop, post-loop use, W0631
+cites:
+cited_by:
+content:
+  RULE ID: W0631 (undefined-loop-variable)
+  WHAT IT FLAGS: A loop variable (defined by a for loop, list comprehension, or generator
+    expression) is used outside/after the loop. If the iterable is empty, the loop body
+    never executes, the variable is never bound, and the post-loop use raises NameError.
+  FLOW PROPERTY: Requires knowing that: (1) a name is bound ONLY in a for-loop target,
+    (2) the loop might not execute (empty iterable), (3) the name is used after the loop
+    exits. This is a specific form of "possibly-unbound" analysis where the definition
+    is guarded by loop execution. Requires reaching-definitions with loop-path awareness:
+    the def ONLY reaches post-loop code if the loop body executes at least once.
+  FALSE POSITIVES DOCUMENTED:
+    - For loops with a function call that returns NoReturn (issue #7311) — pylint
+      does not recognize NoReturn semantics, causing false positives.
+    - Lambda statements inside first of two loops (issue #6419).
+    - When the loop iterates over a known non-empty collection (pylint cannot always
+      prove non-emptiness).
+  CLASSIFICATION: FLOW-NATIVE (reaching definitions + loop-path analysis)
+  TOOLS: pylint (W0631); pyright (reportPossiblyUnbound covers this case);
+    mypy (possibly-undefined covers this case)
+<<<END>>>
+
+SOURCE
+id: 9
+ts: 2026-05-29T10:08:00Z
+relevance: HIGH
+title: pylint R1710 inconsistent-return-statements
+authors: pylint-dev
+year: 2024
+venue: pylint readthedocs
+quality: DOCS
+url: https://pylint.readthedocs.io/en/stable/user_guide/messages/refactor/inconsistent-return-statements.html
+keywords: inconsistent-return, missing return, R1710, CFG, all paths
+cites:
+cited_by:
+content:
+  RULE ID: R1710
+  WHAT IT FLAGS: A function has at least one code path that falls off the end (implicit
+    None return) while other paths have explicit return value. Two sub-cases:
+    (a) some branches return a value, other branches have bare return or fall-through
+    (b) every path must end in a return statement but does not
+  FLOW PROPERTY: Full intra-procedural CFG traversal. Must identify ALL exit points
+    (return statements, implicit fall-through at end of function) and check whether they
+    are consistent. Requires: building function CFG, finding all terminal nodes (nodes
+    with no successors within the function), checking whether each terminal either has
+    an explicit return-with-value or is a raise/NoReturn call.
+  CFG IMPLEMENTATION DETAIL: A custom checker for inconsistent returns constructs a
+    CFG from the function to check for inconsistent returns if there are multiple return
+    statements, and missing return statements if there are none. (Source: PyTA project
+    blog post raineyang.hashnode.dev)
+  COMMON PATTERN: `if condition: return value` without `else` branch — the else
+    falls through implicitly.
+  FIX: Add explicit else branch, or ensure final elif becomes else.
+  DIFFERS FROM: mypy's `return` error code (which checks type compatibility, not
+    consistency). mypy requires `--warn-no-return` or checks return type.
+  CLASSIFICATION: FLOW-NATIVE (requires full CFG with terminal-node analysis)
+  TOOLS: pylint (R1710); mypy (--no-implicit-reexport, error code `return`);
+    pyright (reportReturnType); CodeQL (py/mixed-returns)
+<<<END>>>
+
+SOURCE
+id: 10
+ts: 2026-05-29T10:09:00Z
+relevance: HIGH
+title: CodeQL py/mixed-returns (Explicit returns mixed with implicit fall-through returns)
+authors: GitHub Security Lab
+year: 2024
+venue: CodeQL query help
+quality: DOCS
+url: https://codeql.github.com/codeql-query-help/python/py-mixed-returns/
+keywords: mixed returns, implicit return, fall-through, CodeQL, CFG, inconsistent return
+cites:
+cited_by:
+content:
+  QUERY ID: py/mixed-returns
+  SEVERITY: Recommendation
+  PRECISION: High
+  WHAT IT FLAGS: Functions containing both explicit `return value` statements AND implicit
+    returns (code falling off the end without explicit return). Indicates potentially
+    forgotten return statements.
+  FLOW PROPERTY: Control flow analysis to identify all return paths within a function —
+    distinguish between explicit `return expr` and implicit fall-through. Requires finding
+    all terminal CFG nodes (those with no successor in the function) and classifying them.
+  EXAMPLE:
+    def check_state1(state, interactive=True):
+        if not state['good'] or not state['bad']:
+            if (...) and interactive:
+                return  # implicit None
+            # ... raises
+        return True  # explicit value — inconsistent!
+  CLASSIFICATION: FLOW-NATIVE (CFG terminal-node analysis)
+  TOOLS: CodeQL (py/mixed-returns); pylint (R1710); mypy (return error code)
+<<<END>>>
+
+SOURCE
+id: 11
+ts: 2026-05-29T10:10:00Z
+relevance: HIGH
+title: pyflakes/pylint/ruff F841/W0612 Unused Variable / Dead Store
+authors: PyCQA, pylint-dev, astral-sh
+year: 2024
+venue: multiple
+quality: DOCS
+url: https://docs.astral.sh/ruff/rules/unused-variable/
+keywords: unused variable, dead store, F841, W0612, liveness, def-use
+cites:
+cited_by:
+content:
+  RULE IDs: F841 (pyflakes/ruff), W0612 (pylint unused-variable)
+  WHAT THEY FLAG: Variables that are assigned within functions but never subsequently
+    read. The assignment exists but has no downstream use — a "dead store."
+  FLOW PROPERTY: Liveness analysis / def-use chains. A variable assignment is "dead"
+    if there is no reaching USE of that name after the assignment on any execution path.
+    Full implementation requires: (1) computing all uses of a name after an assignment
+    point, (2) checking whether any use is reachable from the assignment via CFG.
+    NOTE: pyflakes and pylint do NOT implement full liveness analysis. They do
+    scope-level tracking: if a name is NEVER referenced at all in its scope, it is
+    flagged. They do NOT catch the "final assignment never read" (dead store) case
+    where a variable IS read earlier but the last assignment before a return is unused.
+    That case is tracked in pylint issue #5838 ("Lint unused variable assignment /
+    dead store") as a known gap.
+  RUFF F841 SPECIFICS: "Checks for the presence of unused variables in function scopes."
+    Respects `lint.dummy-variable-rgx` — variables prefixed with _ are excluded.
+    Fix is UNSAFE (removing assignments could delete comments). Excludes unpacked
+    assignments (x, y = 1, 2) — see unused-unpacked-variable rule.
+  PYLINT W0612 SPECIFICS: "Used when a variable is defined but not used." Created by
+    variables checker. Skipped if a variable named with _ prefix. NOTE: "This message
+    does not appear if there was any usage of the variable in the past" — confirms
+    it is NOT a true dead-store detector.
+  VULTURE: Detects dead stores via AST name tracking (not full liveness). Confidence
+    60% for attributes/functions/variables, 100% for unreachable code.
+  FALSE POSITIVES: Dynamic access (getattr, locals()), pytest fixtures, __all__,
+    intentionally ignored return values.
+  CLASSIFICATION: AST-LINT for the "never referenced at all" case. FLOW-NATIVE only
+    if true dead-store (last assignment before exit not read) is required.
+  TOOLS: ruff (F841), pyflakes (F841), pylint (W0612)
+<<<END>>>
+
+SOURCE
+id: 12
+ts: 2026-05-29T10:11:00Z
+relevance: HIGH
+title: pyflakes/ruff F401 / pylint W0611 Unused Import
+authors: PyCQA, astral-sh, pylint-dev
+year: 2024
+venue: multiple
+quality: DOCS
+url: https://docs.astral.sh/ruff/rules/unused-import/
+keywords: unused import, F401, W0611, dead import, import analysis
+cites:
+cited_by:
+content:
+  RULE IDs: F401 (pyflakes/ruff), W0611 (pylint unused-import)
+  WHAT THEY FLAG: Import statements where the imported name/module is never referenced
+    in the module body. Unused imports create runtime overhead, risk of import cycles,
+    and cognitive load.
+  FLOW PROPERTY: Scope-level name use tracking. After collecting all imports as
+    Importation bindings in the module scope, walk all USE sites. An import with no
+    corresponding use is flagged. No CFG required — this is a module-scope name
+    presence check. However, ruff needs to handle: re-exports (from x import y as y
+    is treated as used), __all__ exports (names in __all__ are treated as used),
+    TYPE_CHECKING blocks.
+  RUFF F401 OPTIONS:
+    - lint.ignore-init-module-imports
+    - lint.pyflakes.allowed-unused-imports
+    - In __init__.py: suggests exporting via alias or __all__; unsafe fix removes
+      third-party/stdlib imports
+  PYLINT W0611 SPECIFICS: "Used when an imported module or variable is not used.
+    By default, this check is skipped for __init__.py files." Created by variables checker.
+  FALSE POSITIVES: Re-exports, side-effect imports (imported for registration/plugin
+    effect), TYPE_CHECKING-guarded imports, overload decorators.
+  CLASSIFICATION: AST-LINT (scope-level name tracking, no CFG needed)
+  TOOLS: ruff (F401), pyflakes (F841), pylint (W0611), CodeQL (py/unused-import)
+<<<END>>>
+
+SOURCE
+id: 13
+ts: 2026-05-29T10:12:00Z
+relevance: HIGH
+title: pylint W0612 unused-variable / W0613 unused-argument
+authors: pylint-dev
+year: 2024
+venue: pylint readthedocs
+quality: DOCS
+url: https://pylint.readthedocs.io/en/stable/user_guide/messages/warning/unused-variable.html
+keywords: unused-variable, unused-argument, W0612, W0613, variables checker
+cites:
+cited_by:
+content:
+  RULE IDs: W0612 (unused-variable), W0613 (unused-argument)
+  W0612: "Used when a variable is defined but not used." Variables checker.
+    Note: does not appear if the variable was used at any point in the past
+    (not a dead-store detector; just detects totally unreferenced names).
+  W0613: "Unused argument %r" — function argument that is never referenced in the
+    function body. Useful for catching forgotten parameter uses.
+  FLOW PROPERTY: Scope-level name use tracking (as W0611/F401). Not full liveness.
+    Both fire when a name has zero uses in its scope. No CFG traversal.
+  FALSE POSITIVES W0612: Class methods within modules — false positives reported
+    (issue #1880). Dynamic access patterns.
+  CLASSIFICATION: AST-LINT
+  TOOLS: pylint (W0612, W0613), ruff (F841 for variables, ARG001-ARG006 for arguments)
+<<<END>>>
+
+SOURCE
+id: 14
+ts: 2026-05-29T10:13:00Z
+relevance: HIGH
+title: pylint W0702 bare-except / W0703 broad-except (Exception Swallowing)
+authors: pylint-dev
+year: 2024
+venue: pylint readthedocs
+quality: DOCS
+url: https://pylint.pycqa.org/en/stable/user_guide/messages/warning/bare-except.html
+keywords: bare-except, broad-except, exception swallowing, W0702, W0703
+cites:
+cited_by:
+content:
+  RULE IDs: W0702 (bare-except), W0703 (broad-except), W0718 (broad-exception-caught,
+    newer rename of W0703 in recent pylint)
+  W0702 BARE-EXCEPT: "A bare except: clause will catch SystemExit and KeyboardInterrupt
+    exceptions, making it harder to interrupt a program with Control-C, and can disguise
+    other problems. If you want to catch all exceptions that signal program errors, use
+    except Exception: (bare except is equivalent to except BaseException:)"
+  W0703 BROAD-EXCEPT: "If you use a naked except Exception: clause, you might end up
+    catching exceptions other than the ones you expect, hiding bugs or making it harder
+    to debug."
+  EXCEPTION SWALLOWING PATTERN: `except: pass` or `except Exception: pass` — exception
+    is caught and discarded without re-raise, logging, or other handling. pylint's W0702/
+    W0703 flag broad catching but do NOT specifically check whether the exception is
+    re-raised or logged. That "exception is swallowed entirely (pass or no re-raise)"
+    check is a separate concern.
+  CONTROL-FLOW ASPECT: "Relax W0702 so that it does not trigger if the exception is
+    immediately re-raised." A properly implemented swallow-detector needs: walk the
+    except-clause body; check if ANY path within it executes a bare `raise` or
+    `raise e`; if not, the exception is swallowed. This IS a flow property.
+  CLASSIFICATION: W0702/W0703 alone: AST-LINT (pattern: is the except clause bare/broad?).
+    Full swallow detection (no re-raise on any path): FLOW-NATIVE (CFG of except body).
+  TOOLS: pylint (W0702, W0703), ruff (E722 bare-except, BLE001 broad-exception-caught),
+    flake8-bugbear (B001 do not use bare except, B002),
+    bandit (B110 try-except-pass)
+<<<END>>>
+
+SOURCE
+id: 15
+ts: 2026-05-29T10:14:00Z
+relevance: HIGH
+title: pylint R1732 consider-using-with (Resource Leak)
+authors: pylint-dev
+year: 2024
+venue: pylint readthedocs
+quality: DOCS
+url: https://pylint.pycqa.org/en/latest/user_guide/messages/refactor/consider-using-with.html
+keywords: resource leak, consider-using-with, R1732, open file, context manager, post-dominance
+cites:
+cited_by:
+content:
+  RULE ID: R1732 (consider-using-with)
+  WHAT IT FLAGS: Resource-allocating assignments or calls that could be replaced with a
+    `with` block. Detects: file = open(...) followed by file.read() + file.close();
+    also flags open(...).read() (immediate use without with).
+  EXAMPLES:
+    BAD:  file = open("apple.txt", "r", encoding="utf8"); contents = file.read(); file.close()
+    BAD:  contents = open("apple.txt", "r", encoding="utf8").read()
+    GOOD: with open("apple.txt", "r", encoding="utf8") as file: contents = file.read()
+  FLOW PROPERTY: This is a SHALLOW heuristic in pylint's implementation. It looks for
+    resource-allocating calls not already inside a with-statement. It does NOT implement
+    full post-dominance analysis ("does every path from the acquire() operation reach
+    a close()/release()?"). A proper resource-leak detector using post-dominators would:
+    (1) identify acquire op (open(), lock.acquire(), etc.),
+    (2) identify release op (close(), lock.release(), __exit__),
+    (3) check that the release POST-DOMINATES the acquire in the CFG
+        (i.e., every path from acquire to function-exit passes through release).
+    Pylint's R1732 is conservative: it flags if you're NOT using with at all.
+  FALSE POSITIVES DOCUMENTED:
+    - Resources allocated in __enter__ method of a class (issue #4430)
+    - Class member variables using RAII pattern (issue #4808, #7658)
+    - Results returned from functions (allowed by checker)
+    - Call results used in existing with-statements (allowed)
+  CLASSIFICATION: AST-LINT (pattern matching for with-usage absence). A full
+    post-dominance resource-leak detector would be FLOW-NATIVE.
+  TOOLS: pylint (R1732); bandit (B403, B602 etc for subprocess);
+    CodeQL (py/context-manager, various resource leak queries);
+    semgrep (at-exit taint sinks for resource leak)
+<<<END>>>
+
+SOURCE
+id: 16
+ts: 2026-05-29T10:15:00Z
+relevance: HIGH
+title: pyright reportOptional* — None Dereference / Optional Misuse
+authors: Microsoft
+year: 2024
+venue: pyright configuration docs
+quality: DOCS
+url: https://raw.githubusercontent.com/microsoft/pyright/main/docs/configuration.md
+keywords: None dereference, Optional, reportOptionalMemberAccess, reportOptionalSubscript, pyright
+cites:
+cited_by:
+content:
+  RULE IDs:
+    reportOptionalSubscript — "Attempt to index variables with Optional types."
+    reportOptionalMemberAccess — "Attempt to access members of Optional-typed variables."
+    reportOptionalCall — "Attempt to call Optional-typed variables."
+    reportOptionalIterable — "Optional types used as iterables in for statements."
+    reportOptionalContextManager — "Optional types used with with statements."
+    reportOptionalOperand — "Optional types as operands to unary or binary operators."
+  WHAT THEY FLAG: Any operation on a variable of type T | None (Optional[T]) that
+    would raise AttributeError/TypeError at runtime if the value is None. These rules
+    collectively implement Python's "strict optional" checking.
+  FLOW PROPERTY: TYPE-NARROWING + DATAFLOW. Pyright tracks the type of each variable
+    at each program point. After `if x is not None:`, the type of x inside the branch
+    is narrowed to T (not None). The reportOptional* rules only fire if the type at the
+    use site still includes None (i.e., the None case has NOT been narrowed away by a
+    preceding guard check). This requires: (1) type inference to determine that a
+    variable has Optional type, (2) type narrowing through conditional branches,
+    (3) CFG-aware propagation of narrowed types to use sites.
+  DEFAULTS: All reportOptional* rules default to "error" in Basic mode and above.
+  RELATION TO MYPY: mypy implements equivalent checking via strict-optional mode
+    (--strict-optional, default on since mypy 0.600). mypy's error codes: [index],
+    [attr-defined], [operator], [assignment] on Optional values.
+  CLASSIFICATION: FLOW-NATIVE (type narrowing requires CFG-based type-state propagation)
+  TOOLS: pyright (reportOptional*), mypy (strict-optional), pylint (limited via
+    inferred types)
+<<<END>>>
+
+SOURCE
+id: 17
+ts: 2026-05-29T10:16:00Z
+relevance: HIGH
+title: mypy error codes — possibly-undefined, unreachable, redundant-expr
+authors: python/mypy
+year: 2024
+venue: mypy readthedocs
+quality: DOCS
+url: https://mypy.readthedocs.io/en/stable/error_code_list2.html
+keywords: possibly-undefined, unreachable, redundant-expr, mypy, control flow, optional check
+cites:
+cited_by:
+content:
+  ERROR CODES (optional, enabled via --enable-error-code):
+    possibly-undefined: "Mypy generates an error if it cannot verify that a variable
+      will be defined in all execution paths. Includes situations when a variable
+      definition appears in a loop, in a conditional branch, in an except handler, etc."
+      Status: disabled by default, must opt in. Known false positive: match statement
+      with exhaustive coverage (issue #16992). False negative: potentially unbound
+      instance attribute (issue #17837).
+    unreachable: (--warn-unreachable) "Generates an error if a statement or expression
+      will never be executed. In most cases this is due to incorrect control flow or
+      conditional checks that are accidentally always true or false."
+    redundant-expr: "Generates an error if an expression is redundant." Catches
+      always-true/always-false conditions based on type narrowing — e.g.,
+      `if isinstance(x, int) and isinstance(x, str):` is always False.
+    truthy-bool: "Warn when the type of an expression in a boolean context does not
+      implement __bool__ or __len__."
+  ERROR CODES (default):
+    return: "If a function has a non-None return type, mypy expects the function always
+      explicitly returns a value (or raises an exception)." Control flow analysis to
+      ensure all paths return.
+    return-value: "Mypy checks that the returned value is compatible with the type
+      signature of the function."
+  FLOW PROPERTIES:
+    possibly-undefined: requires CFG join-point analysis (same as pyright reportPossiblyUnbound)
+    unreachable: requires type-state propagation — code is unreachable when type analysis
+      determines it cannot be reached (e.g., after isinstance narrowing that covers all cases)
+    redundant-expr: requires type narrowing + constant condition detection
+    return: requires CFG terminal analysis (all exits must be covered)
+  CLASSIFICATION: ALL are FLOW-NATIVE
+  TOOLS: mypy (all above codes)
+<<<END>>>
+
+SOURCE
+id: 18
+ts: 2026-05-29T10:17:00Z
+relevance: HIGH
+title: flake8-bugbear B-rules (mutable defaults, loop closure, finally)
+authors: PyCQA
+year: 2024
+venue: PyCQA/flake8-bugbear GitHub
+quality: CODE
+url: https://github.com/PyCQA/flake8-bugbear/blob/main/README.rst
+keywords: mutable default argument, loop variable capture, finally break, bugbear, B006, B007, B012, B023
+cites:
+cited_by:
+content:
+  TOOL: flake8-bugbear (PyCQA plugin for flake8, rules also re-implemented in ruff B-rules)
+  FLOW-RELEVANT RULES:
+    B006 "Do not use mutable data structures for argument defaults. They are created
+      during function definition time. All calls to the function reuse this one instance
+      of that data structure, persisting changes between them."
+      PATTERN: `def f(x=[]):` — CLASSIFICATION: AST-LINT (syntactic pattern in arg defaults)
+    B007 "Loop control variable not used within the loop body. If this is intended, start
+      the name with an underscore."
+      PATTERN: for-loop variable never referenced inside loop.
+      CLASSIFICATION: AST-LINT (similar to py/unused-loop-variable CodeQL query)
+    B010 "Do not call setattr(x, 'attr', val), instead use normal property access."
+      CLASSIFICATION: AST-LINT
+    B012 "Use of break, continue or return inside finally blocks will silence exceptions
+      or override return values from the try or except blocks. To silence an exception,
+      do it explicitly in the except block."
+      PATTERN: break/continue/return inside finally — these control flow escapes
+      swallow any in-flight exception.
+      FLOW PROPERTY: Detects whether a finally block contains a control-flow escape.
+      CLASSIFICATION: AST-LINT (syntactic: is break/continue/return present in finally?)
+      but the EFFECT is a flow property (exception swallowing via control-flow escape).
+    B016 "Cannot raise a literal. Did you intend to return it or raise an Exception?"
+      CLASSIFICATION: AST-LINT
+    B017 "assertRaises(Exception) should be considered evil. Tests may pass even if
+      the code being tested is never executed due to a typo."
+      CLASSIFICATION: AST-LINT
+    B023 "Functions defined inside a loop must not use variables redefined in the loop,
+      because late-binding closures are a classic gotcha."
+      PATTERN: lambda or nested function inside for/while that captures the loop variable.
+      FLOW PROPERTY: Requires knowing that: (1) function is defined inside loop,
+      (2) the function body uses a name that is also the loop variable.
+      CLASSIFICATION: AST-LINT (syntactic scope analysis) — simpler than CodeQL
+      py/loop-variable-capture which also checks call-after-loop.
+    B024 "Abstract base class has methods, but none of them are abstract."
+      CLASSIFICATION: AST-LINT
+    B026 "Star-arg unpacking after keyword argument."
+      CLASSIFICATION: AST-LINT
+  TOOLS: flake8-bugbear (original), ruff (re-implements all B-rules natively)
+<<<END>>>
+
+SOURCE
+id: 19
+ts: 2026-05-29T10:18:00Z
+relevance: HIGH
+title: CodeQL py/loop-variable-capture
+authors: GitHub Security Lab
+year: 2024
+venue: CodeQL query help
+quality: DOCS
+url: https://codeql.github.com/codeql-query-help/python/py-loop-variable-capture/
+keywords: loop variable capture, late-binding closure, lambda, for loop, CodeQL
+cites:
+cited_by:
+content:
+  QUERY ID: py/loop-variable-capture
+  SEVERITY: Error
+  PRECISION: High
+  WHAT IT FLAGS: Nested functions or lambda expressions that capture loop variables
+    (late-binding closures). When the closure is called AFTER the loop ends, it uses
+    the value from the LAST loop iteration, not the iteration where it was created.
+  TECHNICAL DETAIL: "In Python, a nested function or lambda expression that captures
+    a variable from its surrounding scope is a late-binding closure, meaning that the
+    value of the variable is determined when the closure is called, not when it is
+    created. If the closure is called after the loop ends, it will use the value of the
+    variable on the last iteration."
+  EXAMPLE:
+    tasks = []
+    for i in range(5):
+        tasks.append(lambda: print(i))
+    for t in tasks:
+        t()  # Prints 4,4,4,4,4 NOT 0,1,2,3,4
+  FIXES:
+    Use default parameter: lambda i=i: print(i)
+    Use functools.partial
+  FLOW PROPERTY: Requires scope analysis to identify: (1) function/lambda defined inside
+    loop, (2) loop variable referenced in closure body, (3) closure invoked AFTER loop.
+    The third condition requires interprocedural or use-site analysis.
+  CLASSIFICATION: FLOW-NATIVE (scope + call-site analysis) for full detection.
+    AST-LINT if only checking syntactic capture (not verifying post-loop call).
+  TOOLS: CodeQL (py/loop-variable-capture); flake8-bugbear (B023, syntactic only);
+    ruff (B023 re-implementation)
+<<<END>>>
+
+SOURCE
+id: 20
+ts: 2026-05-29T10:19:00Z
+relevance: HIGH
+title: CodeQL py/unused-local-variable
+authors: GitHub Security Lab
+year: 2024
+venue: CodeQL query help
+quality: DOCS
+url: https://codeql.github.com/codeql-query-help/python/py-unused-local-variable/
+keywords: unused local variable, dead assignment, CodeQL, CWE-563
+cites:
+cited_by:
+content:
+  QUERY ID: py/unused-local-variable
+  SEVERITY: Recommendation
+  PRECISION: Very-high
+  CWE: CWE-563
+  WHAT IT FLAGS: Local variables assigned but never subsequently read.
+  NAMING EXCLUSIONS (not flagged as unused):
+    - Names consisting entirely of underscores
+    - Names containing "unused"
+    - Variables named "dummy" or "empty"
+    - Special names __xxx__
+  FLOW PROPERTY: Def-use chain analysis. After all assignments to a local name, check
+    that at least one USE is reachable from the assignment. For grouped assignments
+    (x, y = func()), if ALL variables are unused they are reported together; if any
+    is used, all are treated as used (conservative).
+  EXAMPLE:
+    random_no = write_random_to_file()  # assigned but never read — flagged
+    print("A random number was written")
+  FALSE POSITIVE HANDLING: Grouped assignments handled specially. Naming conventions
+    respected. Very-high precision means minimal false positives.
+  CLASSIFICATION: FLOW-NATIVE (requires def-use chain analysis to detect fully
+    unreferenced definitions, though simple scope tracking is sufficient for "never
+    referenced at all" case)
+  TOOLS: CodeQL (py/unused-local-variable), pyflakes (F841), pylint (W0612)
+<<<END>>>
+
+SOURCE
+id: 21
+ts: 2026-05-29T10:20:00Z
+relevance: HIGH
+title: CodeQL py/uninitialized-local-variable (Potentially Uninitialized)
+authors: GitHub Security Lab
+year: 2024
+venue: CodeQL query help
+quality: DOCS
+url: https://codeql.github.com/codeql-query-help/python/py-uninitialized-local-variable/
+keywords: uninitialized local variable, use-before-def, CodeQL, UnboundLocalError
+cites:
+cited_by:
+content:
+  QUERY ID: py/uninitialized-local-variable (NOTE: searches also return py/possibly-unbound-local
+    as same concept — query name may vary by CodeQL version)
+  SEVERITY: Error
+  PRECISION: Medium
+  WHAT IT FLAGS: Local variables used before assignment in functions. When a variable is
+    assigned anywhere in a function without explicit global/nonlocal declaration, Python
+    treats it as local. Using it before initialization triggers UnboundLocalError.
+  KEY DESCRIPTION: "If a variable is assigned to in a function and not explicitly declared
+    global or nonlocal, then it is assumed to be a local variable. If it is used before
+    it is defined, then an UnboundLocalError will be raised."
+  EXAMPLE (problematic):
+    def test1():
+        var = 2
+        def print_var():
+            print var      # Error: used before var = 3 in same scope
+            var = 3
+  FIXES: Add global/nonlocal declaration, or initialize before use.
+  FLOW PROPERTY: CFG-based reaching definitions. The query checks that every USE of
+    a local variable has a reaching DEFINITION on all paths from function entry.
+  CLASSIFICATION: FLOW-NATIVE (requires reaching definitions analysis)
+  TOOLS: CodeQL (py/uninitialized-local-variable); pylint (E0601 used-before-assignment);
+    pyflakes (F823, linear-case only); pyright (reportUnboundVariable)
+<<<END>>>
+
+SOURCE
+id: 22
+ts: 2026-05-29T10:21:00Z
+relevance: HIGH
+title: pylint W0621 redefined-outer-name (Variable Shadowing)
+authors: pylint-dev
+year: 2024
+venue: pylint readthedocs
+quality: DOCS
+url: https://pylint.readthedocs.io/en/latest/user_guide/messages/warning/redefined-outer-name.html
+keywords: variable shadowing, redefined-outer-name, W0621, scope, enclosing scope
+cites:
+cited_by:
+content:
+  RULE ID: W0621 (redefined-outer-name)
+  WHAT IT FLAGS: A variable's name hides a name defined in an outer scope or except handler.
+    Triggers when function-local variable has same name as module-level variable, or
+    function parameter shadows enclosing scope name.
+  EXAMPLES: Function parameter `filename` shadowing global `filename`; `app` parameter
+    shadowing global `app`.
+  KNOWN GAP: W0621 correctly fires for module-level shadowing but DOES NOT report when
+    a function-local variable hides one from an enclosing function scope (nonlocal
+    variable without nonlocal declaration). Issue #442 tracks this.
+  FLOW PROPERTY: Scope-chain analysis. Requires walking the scope stack and comparing
+    names at each level. No CFG needed — purely lexical scope analysis.
+  CLASSIFICATION: AST-LINT (lexical scope analysis)
+  TOOLS: pylint (W0621); ruff (A001 variable-shadows-builtin, A002 argument-shadows-builtin)
+<<<END>>>
+
+SOURCE
+id: 23
+ts: 2026-05-29T10:22:00Z
+relevance: HIGH
+title: pylint W0102 dangerous-default-value (Mutable Default Argument)
+authors: pylint-dev
+year: 2024
+venue: pylint / wikidot
+quality: DOCS
+url: http://pylint-messages.wikidot.com/messages:w0102
+keywords: mutable default argument, W0102, dangerous-default-value, list dict
+cites:
+cited_by:
+content:
+  RULE ID: W0102 (dangerous-default-value)
+  WHAT IT FLAGS: "Used when a mutable value as list or dictionary is detected in a
+    default value for an argument."
+  PATTERN: def f(x=[]): or def f(x={}): or def f(x=set()):
+  TECHNICAL REASON: Default argument values are evaluated ONCE at function definition
+    time, not at each call. Mutable defaults are shared across all calls, persisting
+    changes.
+  FLOW PROPERTY: None — purely syntactic AST check on function argument defaults.
+  CLASSIFICATION: AST-LINT
+  TOOLS: pylint (W0102), flake8-bugbear (B006), ruff (B006 re-implementation),
+    pyflakes (no equivalent)
+<<<END>>>
+
+SOURCE
+id: 24
+ts: 2026-05-29T10:23:00Z
+relevance: HIGH
+title: vulture — Find Dead Python Code
+authors: Jendrik Seipp
+year: 2024
+venue: jendrikseipp/vulture GitHub
+quality: CODE
+url: https://github.com/jendrikseipp/vulture
+keywords: dead code, unused functions, unused classes, unreachable code, vulture, confidence
+cites:
+cited_by:
+content:
+  TOOL: vulture
+  WHAT IT DETECTS: Unused functions, classes, methods, properties, imports, variables.
+    Unreachable code after return/break/continue/raise. "Unsatisfiable conditional
+    statements" (always-true/false conditions).
+  IMPLEMENTATION: Uses Python's ast module to build ASTs. Traverses all syntax trees
+    recording names of DEFINED and USED objects. Reports defined-but-never-used names.
+    "Ignores scopes and only takes object names into account" — does not distinguish
+    local vs global namespace.
+  CONFIDENCE SCORING:
+    100% — function/method/class arguments, unreachable code (guaranteed dead)
+    90%  — imports
+    60%  — attributes, classes, functions, methods, properties, variables
+    Values below 100% are "very rough estimates based on type of code chunk"
+  FLAG: --min-confidence 100 to only report guaranteed dead code
+  WHITELIST MECHANISM: Create Python file simulating usage of "dead" code.
+    `vulture --make-whitelist > whitelist.py` to auto-generate.
+  FALSE POSITIVES: Dynamic attribute injection, getattr, eval, exec, __all__,
+    callback registrations, decorators, test fixtures.
+    Use --ignore-names, --ignore-decorators, underscore-prefix, or whitelist.
+  DIFFERS FROM: pyflakes/pylint — those check per-scope; vulture checks across
+    whole codebase (finds unused public APIs, not just local vars).
+  CLASSIFICATION: AST-LINT (name presence tracking). Not full liveness analysis.
+    Unreachable code detection is basic (post-return/raise in same block).
+  TOOLS: vulture (standalone)
+<<<END>>>
+
+SOURCE
+id: 25
+ts: 2026-05-29T10:24:00Z
+relevance: HIGH
+title: Meta Pysa (Pyre) — Interprocedural Taint Analysis
+authors: Meta Engineering
+year: 2020
+venue: engineering.fb.com / pyre-check.org
+quality: INDUSTRY
+url: https://pyre-check.org/docs/pysa-basics/
+keywords: Pysa, Pyre, taint analysis, interprocedural, dataflow, sources, sinks, sanitizers
+cites:
+cited_by:
+content:
+  TOOL: Pysa (integrated into Pyre, Meta's Python type checker)
+  APPROACH: Interprocedural taint analysis. Tracks flows from SOURCES (origins of
+    untrusted data, e.g. HTTP request parameters) to SINKS (dangerous operations,
+    e.g. eval(), SQL exec).
+  SOURCES/SINKS/SANITIZERS: Declared in taint.config JSON and .pysa model files using
+    annotations: TaintSource[Name], TaintSink[Name], @Sanitize, TaintInTaintOut.
+  RULES: Connect specific source kinds to sink kinds. A rule for SQL injection flags
+    user-controlled data flowing into SQL queries.
+  INTERPROCEDURAL: Propagates taint across function calls. If tainted data flows
+    into a function, return value inherits taint (conservative when source unavailable).
+  FLOW PROPERTY: Full interprocedural dataflow (taint propagation). Models forward
+    data flow: taint propagates through assignments, arithmetic, string formatting,
+    indexing. Taint is tracked via reaching-definitions extended with taint labels.
+  AT-EXIT SINKS (Semgrep Pro equivalent): Pysa can flag resource leaks framed as
+    "taint reaching function exit without being released" — though this is primarily
+    used for security (secret reaching log) not resource management.
+  FALSE POSITIVES: When taint flows into functions without source code, conservatively
+    assumes return value inherits taint — can generate false positives.
+  STATUS: Open source on GitHub (facebook/Pyre-check). Actively maintained as of 2024.
+    Used internally at Meta to find vulnerabilities in large-scale Python codebase.
+  DIFFERS FROM PYRIGHT/MYPY: Pysa focuses on security data flows, not type correctness.
+  CLASSIFICATION: FLOW-NATIVE (full interprocedural taint dataflow)
+  TOOLS: Pysa (Meta/pyre-check)
+<<<END>>>
+
+SOURCE
+id: 26
+ts: 2026-05-29T10:25:00Z
+relevance: HIGH
+title: Semgrep Dataflow Analysis Engine
+authors: Semgrep (r2c)
+year: 2024
+venue: semgrep.dev docs
+quality: DOCS
+url: https://semgrep.dev/docs/writing-rules/data-flow/data-flow-overview
+keywords: semgrep, taint mode, dataflow, intra-procedural, resource leak, at-exit
+cites:
+cited_by:
+content:
+  TOOL: Semgrep (Community Edition + Pro Engine)
+  DATAFLOW ENGINE: Intra-procedural dataflow analysis (CE). Inter-file/interprocedural
+    (Pro Engine only — tracks taint across functions within one file, but does NOT
+    cross file boundaries).
+  TAINT MODE: mode: taint in rule YAML. Reports when tainted data (from sources) reaches
+    a vulnerable function (sink) without being sanitized. Sources → propagators
+    (assignments, function calls) → sinks.
+  RESOURCE LEAK VIA AT-EXIT SINKS (Pro): "at-exit: true restricts a sink specification
+    to only match at exit statements, or statements after which the control-flow will
+    exit the function being analyzed." This enables leak detection rules: if a resource
+    (e.g., open file handle) reaches a function exit without being closed, flag it.
+    This IS a post-dominance property: release must post-dominate acquire.
+  CONSTANT PROPAGATION: Semgrep CE includes constant propagation in its dataflow engine,
+    enabling detection of constant conditions.
+  PYTHON COVERAGE: Framework-specific Pro rules require Pro Engine; CE has basic
+    dataflow for Python.
+  FALSE POSITIVES: Conservative: when taint flows into functions without source,
+    may assume propagation. at-exit false positives from complex control flow.
+  CLASSIFICATION: FLOW-NATIVE (taint/dataflow); at-exit-sinks for resource leaks
+    require post-dominance reasoning.
+  TOOLS: Semgrep (CE for basic rules; Pro Engine for interprocedural + at-exit)
+<<<END>>>
+
+
+SOURCE
+id: 27
+ts: 2026-05-29T10:30:00Z
+relevance: HIGH
+title: CodeQL py/constant-conditional-expression and py/comparison-of-constants (Always-True/False Conditions)
+authors: GitHub Security Lab
+year: 2024
+venue: CodeQL query help
+quality: DOCS
+url: https://codeql.github.com/codeql-query-help/python/py-constant-conditional-expression/
+keywords: constant condition, always-true, always-false, dead code, tautology, CWE-570, CWE-571
+cites:
+cited_by:
+content:
+  QUERY IDs:
+    py/constant-conditional-expression — constant value as condition in if/while
+    py/comparison-of-constants — two constants compared to each other
+    py/redundant-comparison — comparison outcome can be inferred from context/prior comparisons
+  SEVERITIES: Warning (all three)
+  PRECISIONS: py/comparison-of-constants: very-high; py/redundant-comparison: high
+  CWEs: CWE-561 (dead code), CWE-570 (always false), CWE-571 (always true)
+  WHAT THEY FLAG:
+    py/constant-conditional-expression: `if True:`, `if 1 > 100:`, `while False:` —
+      conditional is a literal constant, only one branch ever runs. Dead code.
+    py/comparison-of-constants: `foo = 1 == 1` — both sides of comparison are constants.
+      "The Boolean value of the comparison will always be the same."
+    py/redundant-comparison: same comparison appears in both if/elif branches; the elif
+      comparison is always False given the if already checked it.
+      EXAMPLE: if obj1 < obj2: return -1; elif obj1 < obj2: return 1  # elif unreachable
+  FLOW PROPERTY:
+    py/constant-conditional-expression: constant value analysis only (no CFG needed for
+      literal constants; type-narrowing needed for more complex always-true/false via types)
+    py/redundant-comparison: requires CFG-level reasoning — knowing that execution reaching
+      the elif implies the if-condition was false, making the same comparison redundant.
+  RUFF EQUIVALENT: PLR0133 (comparison-of-constant) — "Comparing two constants will always
+    resolve to the same value, so the comparison is redundant." Added in ruff v0.0.221.
+  PYLINT EQUIVALENT: R0133 (comparison-of-constants) in pylint.
+  MYPY EQUIVALENT: `redundant-expr` error code — "Mypy generates an error if it thinks
+    that an expression is redundant." Triggered by type narrowing making conditions always
+    true/false.
+  CLASSIFICATION:
+    py/comparison-of-constants: AST-LINT (syntactic pattern)
+    py/redundant-comparison: FLOW-NATIVE (requires CFG to know prior comparison result)
+    mypy redundant-expr: FLOW-NATIVE (type narrowing + control flow)
+  TOOLS: CodeQL (all three), ruff (PLR0133), pylint (R0133), mypy (redundant-expr)
+<<<END>>>
+
+SOURCE
+id: 28
+ts: 2026-05-29T10:31:00Z
+relevance: HIGH
+title: Unreachable Code Detection via Type Narrowing — Never/NoReturn, assert_never, exhaustiveness
+authors: python/typing, mypy, pyright
+year: 2024
+venue: typing.python.org
+quality: DOCS
+url: https://typing.python.org/en/latest/guides/unreachable.html
+keywords: Never, NoReturn, unreachable, exhaustiveness, assert_never, type narrowing, dead branch
+cites:
+cited_by:
+content:
+  MECHANISM: Type checkers detect unreachable code via the bottom type (Never/NoReturn).
+    A code path is flagged as unreachable when the type checker can prove the type at
+    that point is Never — meaning no value can reach that code.
+  NEVER vs NORE_RETURN: Python 3.11 added Never as explicit bottom type. Never and
+    NoReturn are identical to type checkers. Both represent "this function never returns"
+    or "this code is unreachable."
+  EXHAUSTIVENESS CHECKING PATTERN:
+    ```python
+    def assert_never(arg: Never) -> Never:
+        raise AssertionError("Expected code to be unreachable")
+    ```
+    Placing assert_never() in default/catch-all branches forces type checker to verify
+    all cases are handled. If new enum member added without updating match statement,
+    type checker flags error — new variant would reach assert_never(), violating Never contract.
+  PYRIGHT:
+    - reportMatchNotExhaustive: enabled by default in strict mode. Direct exhaustiveness
+      checking without requiring assert_never().
+    - reportUnreachable: flags code determined to be structurally or type-analysis unreachable.
+      Default: "none" (but basedpyright makes it default: "warning").
+      NOTE: Pyright's version does NOT report sys.version_info or sys.platform checks as
+      unreachable (common false-negative).
+  MYPY:
+    - --warn-unreachable: generates error for unreachable statements (type-analysis-based)
+    - exhaustive-match: enables exhaustiveness checking via error code
+    - redundant-expr: flags redundant expressions determined always true/false
+  BASEDPYRIGHT IMPROVEMENTS:
+    - reportUnreachable is the first new rule added to basedpyright
+    - Reports unreachable code that standard pyright misses (sys.version_info checks)
+    - Unreachable code is NOT type-checked in pyright — basedpyright fixes this
+    - Introduces "hint" diagnostic category for unreachable code hints
+  CLASSIFICATION: FLOW-NATIVE (type narrowing + type-state propagation through CFG)
+  TOOLS: pyright (reportUnreachable, reportMatchNotExhaustive), mypy (--warn-unreachable,
+    redundant-expr, exhaustive-match), basedpyright (improved reportUnreachable)
+<<<END>>>
+
+SOURCE
+id: 29
+ts: 2026-05-29T10:32:00Z
+relevance: HIGH
+title: bandit B110 try_except_pass and B112 try_except_continue (Exception Swallowing)
+authors: PyCQA
+year: 2024
+venue: bandit readthedocs
+quality: DOCS
+url: https://bandit.readthedocs.io/en/latest/plugins/b110_try_except_pass.html
+keywords: exception swallowing, try-except-pass, bandit, B110, B112, CWE-703
+cites:
+cited_by:
+content:
+  RULE IDs: B110 (try_except_pass), B112 (try_except_continue)
+  B110 DESCRIPTION: "It is possible to catch an exception and silently ignore it. This
+    pattern is considered bad practice in general, but also represents a potential
+    security issue. A larger than normal volume of errors from a service can indicate an
+    attempt is being made to disrupt or interfere with it. Thus errors should, at the
+    very least, be logged."
+  B112 DESCRIPTION: Same as B110 but for `except: continue` pattern — exception caught
+    and execution continues in the loop.
+  CONFIGURATION:
+    check_typed_exception (bool, default True): When False, ignores typed exceptions
+    (except ZeroDivisionError: pass), only flagging untyped or broad catches.
+  SEVERITY: Low
+  CONFIDENCE: High
+  CWE: CWE-703 (Improper Check or Handling of Exceptional Conditions)
+  WHAT IT DETECTS: AST pattern: try block with except clause whose body contains only
+    `pass` (B110) or only `continue` (B112). Does NOT check whether exception is
+    re-raised on any path — purely syntactic.
+  FLOW PROPERTY NEEDED FOR FULL DETECTION: Detecting "exception swallowed and not
+    re-raised on any path" requires flow analysis of except body — checking that
+    no path through the except handler executes a bare `raise`. This is FLOW-NATIVE.
+    Bandit's version is AST-LINT (just `pass` literal in handler).
+  PYLINT W0706 (try-except-raise): Detects the OPPOSITE anti-pattern — raise as
+    FIRST statement in except block (useless, immediately re-raises same exception).
+  FALSE POSITIVES: Legitimate uses of silent exception suppression (e.g., optional
+    feature availability checks: try: import rapidjson as json; except ImportError: pass).
+  CLASSIFICATION: AST-LINT (syntactic pass/continue in handler)
+  TOOLS: bandit (B110, B112), pylint (W0702 bare-except, W0703 broad-except),
+    ruff (E722, BLE001), CodeQL (py/empty-except)
+<<<END>>>
+
+SOURCE
+id: 30
+ts: 2026-05-29T10:33:00Z
+relevance: HIGH
+title: CodeQL py/exit-from-finally (break/return in finally suppresses exceptions)
+authors: GitHub Security Lab
+year: 2024
+venue: CodeQL query help
+quality: DOCS
+url: https://codeql.github.com/codeql-query-help/python/py-exit-from-finally/
+keywords: finally block, return in finally, break in finally, exception suppression, CWE-584
+cites:
+cited_by:
+content:
+  QUERY ID: py/exit-from-finally
+  SEVERITY: Warning
+  PRECISION: Medium
+  CWE: CWE-584
+  TAGS: quality, reliability, correctness
+  WHAT IT FLAGS: break or return statements inside finally blocks. "Causes the try-finally
+    block to exit immediately discarding the exception."
+  TECHNICAL BEHAVIOR: When a finally block contains return or break, Python exits the
+    finally block via that statement. Any in-flight exception (from try or except block)
+    is silently discarded. This is a CONTROL FLOW escape that suppresses exceptions.
+  FLOW PROPERTY: Syntactic — detecting presence of return/break in finally body. The
+    EFFECT is a flow property (exception suppression via control-flow escape), but the
+    detection itself is structural: is there a return/break inside a finally clause?
+  RELATED RULE: flake8-bugbear B012 (same pattern); ruff B012 (jump-statement-in-finally)
+  FALSE POSITIVE NOTES: B012 has known false positives when break is in a loop INSIDE
+    the finally block (issue #106 in flake8-bugbear) — the break exits the inner loop,
+    not the finally block.
+  PEP 601: PEP 601 proposed to FORBID return/break/continue breaking out of finally,
+    indicating this is a recognized anti-pattern.
+  CLASSIFICATION: AST-LINT for detection (structural), FLOW-NATIVE for understanding
+    the semantic effect (exception path suppression).
+  TOOLS: CodeQL (py/exit-from-finally), flake8-bugbear (B012), ruff (B012),
+    pylint (W0150 break-in-finally, W0641 consider-using-with)
+<<<END>>>
+
+SOURCE
+id: 31
+ts: 2026-05-29T10:34:00Z
+relevance: HIGH
+title: CodeQL py/unreachable-except (Unreachable Except Block due to Exception Order)
+authors: GitHub Security Lab
+year: 2024
+venue: CodeQL query help
+quality: DOCS
+url: https://codeql.github.com/codeql-query-help/python/py-unreachable-except/
+keywords: unreachable except, exception ordering, superclass, except order, CodeQL
+cites:
+cited_by:
+content:
+  QUERY ID: py/unreachable-except
+  SEVERITY: Error
+  PRECISION: (high implied by error severity)
+  WHAT IT FLAGS: Exception handlers that can never execute because a preceding,
+    more general except block will always catch the exception first.
+    "Python searches the except blocks in source code order until it finds a matching
+    except block for the exception." When a superclass exception handler appears before
+    a subclass handler, the subclass handler becomes unreachable.
+  EXAMPLE:
+    def incorrect_except_order(val):
+        try: val.attr
+        except Exception: print("Exception")
+        except AttributeError: print("AttributeError")  # Never executes — unreachable!
+  FLOW PROPERTY: Exception type hierarchy analysis + exception handler ordering.
+    Requires knowing that Exception is a superclass of AttributeError (MRO lookup)
+    and that Python matches from top to bottom. The "unreachable" property is a CFG
+    property: the except AttributeError node has no incoming exception-flow edges that
+    are not already caught by except Exception.
+  CLASSIFICATION: FLOW-NATIVE (exception type hierarchy + exception propagation flow)
+  FIX: Reorder except blocks from most specific to most general.
+  TOOLS: CodeQL (py/unreachable-except); pylint has some coverage
+    via exception-checker; pyflakes does not detect this.
+<<<END>>>
+
+SOURCE
+id: 32
+ts: 2026-05-29T10:35:00Z
+relevance: HIGH
+title: CodeQL py/empty-except (Empty Exception Handler)
+authors: GitHub Security Lab
+year: 2024
+venue: CodeQL query help
+quality: DOCS
+url: https://codeql.github.com/codeql-query-help/python/py-empty-except/
+keywords: empty except, exception swallowing, pass, CodeQL, CWE-390
+cites:
+cited_by:
+content:
+  QUERY ID: py/empty-except
+  SEVERITY: Recommendation
+  PRECISION: High
+  CWE: CWE-390 (Detection of Error Condition Without Action)
+  WHAT IT FLAGS: Empty except blocks — exception handlers with no implementation (pass).
+    "Ignoring exceptions that should be dealt with in some way is almost always a bad idea."
+  EXAMPLE:
+    try: security_manager.drop_privileges()
+    except SecurityError: pass  # privilege drop failure silently ignored!
+  FLOW PROPERTY: Structural/syntactic — checks whether except body contains only pass.
+    No CFG needed for basic detection. For full "no logging or re-raise on any path"
+    detection, would require CFG analysis of handler body.
+  CLASSIFICATION: AST-LINT (syntactic: pass in handler body)
+  NOTE: This detects the exact same pattern as bandit B110, but in CodeQL's framework
+    with better context about WHY it's a security concern.
+  TOOLS: CodeQL (py/empty-except), bandit (B110), pylint (W0702/W0703),
+    ruff (BLE001, E722)
+<<<END>>>
+
+SOURCE
+id: 33
+ts: 2026-05-29T10:36:00Z
+relevance: HIGH
+title: Beniget — Use-Def Chains for Python Programs
+authors: Serge Guelton (pythran/serge-sans-paille)
+year: 2020
+venue: pythran-stories blog / PyPI
+quality: BLOG
+url: https://serge-sans-paille.github.io/pythran-stories/gast-beniget-use-def-chains-for-python-programs.html
+keywords: use-def chains, def-use, beniget, gast, dead code, unused imports, constant folding
+cites:
+cited_by:
+content:
+  TOOL: beniget (Python package, BSD 3-clause, supports Python 2.7 and 3.6+)
+  WHAT IT PROVIDES: Use-def chains — compiler abstraction linking each USE of an
+    identifier to its DEFINITION(s). Enables: unused import detection, closure computation,
+    NameError detection (uses without definitions), constant folding support.
+  IMPLEMENTATION: Works on gast (Generic AST) — unified AST structure across Python
+    versions. Traverses AST recording DEF and USE events. Builds explicit def→use and
+    use→def edges.
+  EXAMPLE:
+    a = 1        # DEF(a)
+    b = a + 2    # DEF(b) USE(a)
+    print(a, b)  # USE(a, b)
+  DEAD STORE DETECTION: Possible by finding DEFs with no downstream USEs in the chain.
+    This IS a true def-use chain approach and CAN detect last-write-never-read.
+  LIMITATIONS: "Cannot reliably handle Python's dynamic features including eval and exec,
+    star imports, and assigning to globals() or locals()."
+    "Performs non-data-dependent analysis, meaning conditional assignments don't guarantee
+    definitions." — i.e., no path-sensitivity.
+  CONTRAST WITH PYFLAKES/PYLINT: Both pyflakes and pylint do scope-level name tracking
+    (name exists/doesn't in scope). Beniget builds actual edges between definition sites
+    and use sites, enabling dead-store analysis that pyflakes/pylint miss.
+  AVAILABILITY: pip install beniget; GitHub: github.com/serge-sans-paille/beniget
+  CLASSIFICATION: FLOW-NATIVE (def-use chain construction)
+  NOTE: This is a LIBRARY for analysis, not a standalone checker.
+  TOOLS: beniget (library); pythran compiler uses it
+<<<END>>>
+
+SOURCE
+id: 34
+ts: 2026-05-29T10:37:00Z
+relevance: HIGH
+title: pylint W0631 loop-variable + B023 closure-variable-capture — Detector Classification Summary
+authors: pylint-dev, PyCQA
+year: 2024
+venue: composite
+quality: DOCS
+url: https://pylint.readthedocs.io/en/stable/user_guide/messages/warning/undefined-loop-variable.html
+keywords: loop variable, undefined-loop-variable, closure capture, late binding, B023, W0631
+cites:
+cited_by:
+content:
+  NOTE: This record consolidates related loop-variable detectors for comparison.
+  W0631 (pylint undefined-loop-variable):
+    SCOPE: Flags use of for-loop variable AFTER loop exits, when loop might not execute
+    FLOW PROPERTY: Requires knowing variable is loop-only + possibly empty iterable
+  B007 (bugbear / ruff):
+    "Loop control variable not used within the loop body" — should start with _
+    SCOPE: Flags unused loop variable (wasteful iteration variable name)
+    CLASSIFICATION: AST-LINT
+  B023 (bugbear / ruff):
+    "Functions defined inside a loop must not use variables redefined in the loop"
+    SCOPE: Closure captures loop variable (late-binding gotcha)
+    CLASSIFICATION: AST-LINT (syntactic scope capture detection)
+  py/loop-variable-capture (CodeQL):
+    SCOPE: Same as B023 but also verifies closure is CALLED after loop
+    CLASSIFICATION: FLOW-NATIVE (call-site + scope analysis)
+  py/unused-loop-variable (CodeQL):
+    SCOPE: for-loop iteration variable never used in loop body
+    SEVERITY: Error / High precision
+    CLASSIFICATION: AST-LINT (similar to B007 but labeled Error, not Warning)
+  SUMMARY TABLE:
+    W0631    post-loop use of possibly-unbound variable      FLOW-NATIVE
+    B007     loop var not used in body (wasteful)            AST-LINT
+    B023     closure captures loop var (late binding)        AST-LINT (partial)
+    py/loop-variable-capture   closure captures + called after loop   FLOW-NATIVE
+    py/unused-loop-variable    loop var unused in body       AST-LINT (Error severity)
+  TOOLS: pylint (W0631), bugbear/ruff (B007, B023), CodeQL (py/loop-variable-capture,
+    py/unused-loop-variable)
+<<<END>>>
+
+SOURCE
+id: 35
+ts: 2026-05-29T10:38:00Z
+relevance: HIGH
+title: mypy return / return-value error codes (Missing / Inconsistent Return)
+authors: python/mypy
+year: 2024
+venue: mypy readthedocs
+quality: DOCS
+url: https://mypy.readthedocs.io/en/stable/error_code_list.html
+keywords: return, return-value, missing return, inconsistent return, mypy, CFG
+cites:
+cited_by:
+content:
+  ERROR CODES:
+    return: "If a function has a non-None return type, mypy expects that the function
+      always explicitly returns a value (or raises an exception)." Requires control flow
+      analysis to ensure all code paths return.
+      NOTE: This is the mypy equivalent of pylint R1710 inconsistent-return-statements.
+    return-value: "Mypy checks that the returned value is compatible with the type
+      signature of the function." Type-level check, not primarily flow-based.
+    empty-body: "Checks functions and methods with empty bodies that have non-trivial
+      return types, requiring path analysis to detect missing implementations."
+  FLOW PROPERTY: `return` code requires: build function CFG; find all terminal nodes
+    (CFG exits); check each is either explicit return-with-value or raise/NoReturn call.
+    Equivalent to R1710 in terms of CFG requirements.
+  ISSUE #13203: Optional return type requires explicit return statement for non-empty
+    function — mypy incorrectly requires explicit return for Optional[T] return type
+    with bare `return` (known bug).
+  ISSUE #11656: Optional return type not correctly handled when function returns without
+    None value — returns without value in Optional[T] context.
+  STRICT OPTIONAL:
+    mypy's `--strict-optional` (default since 0.600) enables None-safety. Equivalent
+    to pyright's reportOptional* family of checks. Any Optional[T] variable used without
+    None check triggers type errors.
+  CLASSIFICATION: FLOW-NATIVE (return code requires CFG terminal analysis)
+  TOOLS: mypy (return, return-value), pyright (reportReturnType), pylint (R1710)
+<<<END>>>
+
+SOURCE
+id: 36
+ts: 2026-05-29T10:39:00Z
+relevance: MED
+title: pylint W0104 pointless-statement / W0106 expression-not-assigned
+authors: pylint-dev
+year: 2024
+venue: pylint readthedocs
+quality: DOCS
+url: https://pylint.readthedocs.io/en/stable/user_guide/messages/warning/pointless-statement.html
+keywords: pointless statement, expression not assigned, W0104, W0106, dead expression
+cites:
+cited_by:
+content:
+  RULE IDs: W0104 (pointless-statement), W0106 (expression-not-assigned)
+  W0104: "Used when a statement doesn't have (or at least seems to) any effect."
+    Fires on bare expressions in function bodies: `x + 1` (result discarded), `"docstring
+    not at start"` (looks like misplaced docstring).
+  W0106: "Used when an expression that is not a function call is assigned to nothing."
+    Related to expression results being discarded.
+  CLASSIFICATION: AST-LINT (syntactic: statement is bare expression with no assignment
+    and no call effect). NOT a dataflow check — doesn't verify whether the expression
+    has side effects.
+  FALSE POSITIVES: Custom objects where __add__ has side effects, intentional value
+    computation for side effects (uncommon but valid Python).
+  NOTE: These are LIGHTER-WEIGHT than dead-store detectors. Dead stores (assignment
+    whose value is never used) are more useful; these catch entirely discarded expression
+    results.
+  TOOLS: pylint (W0104, W0106); ruff has related checks in B/PIE categories
+<<<END>>>
+
+SOURCE
+id: 37
+ts: 2026-05-29T10:40:00Z
+relevance: HIGH
+title: Resource Leak — Post-Dominance Property Formal Definition for acquire/release
+authors: (synthesis from Semgrep, CodeQL, Pysa docs)
+year: 2024
+venue: synthesis record
+quality: DOCS
+url: https://semgrep.dev/docs/writing-rules/data-flow/taint-mode/overview
+keywords: resource leak, post-dominance, acquire, release, must-reach, file handle, lock
+cites:
+cited_by:
+content:
+  FORMAL PROPERTY: A resource leak occurs when acquire(r) is not post-dominated by
+    release(r) in the CFG. Formally: for every path from acquire(r) to function exit,
+    that path must pass through release(r). If any path from acquire to exit DOES NOT
+    pass through release, there is a potential leak.
+  EQUIVALENTLY (in terms of post-dominators): release must be in the post-dominator
+    set of acquire — every path from acquire to the exit passes through release.
+  MUST-REACH vs MAY-REACH: We need release to MUST-reach from acquire on ALL paths
+    (post-dominance). If release only MAY-reach (on some paths), there is a conditional
+    leak (resource leaked on exception paths).
+  PYTHON CONTEXT: Python's `with` statement (context managers) is the canonical solution.
+    The __exit__ method is guaranteed to be called even on exception paths. Static
+    detection checks whether resources that implement __enter__/__exit__ are used
+    with `with` or manually managed.
+  IMPLEMENTATION APPROACHES:
+    1. pylint R1732 (consider-using-with): SHALLOW — checks if resource NOT inside with.
+       Does not do post-dominance analysis. Does not track whether close() is called
+       on all paths.
+    2. semgrep at-exit taint sinks: PRO feature. `at-exit: true` restricts sink to
+       match only at function exit statements. Enables: if open() handle taint reaches
+       exit without close(), flag it. This IS post-dominance reasoning.
+    3. CodeQL: Has context-manager and resource-tracking queries. Uses CFG-level
+       analysis. Full post-dominance possible.
+    4. Pysa: Frame security as taint — file handle "tainted" by open(), "sanitized"
+       by close(). If taint reaches function exit (at-exit sink), flag.
+  LOCK ACQUIRE/RELEASE: Same post-dominance property. lock.acquire() should be
+    post-dominated by lock.release(). Python's threading.Lock used as context manager
+    (`with lock:`) guarantees this.
+  FALSE POSITIVES: RAII patterns, transfers of ownership, resources stored in class
+    attributes for later release.
+  CLASSIFICATION: FLOW-NATIVE (requires CFG post-dominance analysis or must-reach)
+  TOOLS: pylint (R1732, shallow), semgrep (at-exit, Pro), CodeQL (full CFG),
+    pysa/pyre (taint-based)
+<<<END>>>
+
+SOURCE
+id: 38
+ts: 2026-05-29T10:41:00Z
+relevance: HIGH
+title: CodeQL Python CFG Analysis — ControlFlowNode, AstNode, BasicBlock
+authors: GitHub / CodeQL team
+year: 2024
+venue: CodeQL docs
+quality: DOCS
+url: https://codeql.github.com/docs/codeql-language-guides/analyzing-control-flow-in-python/
+keywords: CodeQL CFG, ControlFlowNode, AstNode, BasicBlock, unreachable, Python CFG
+cites:
+cited_by:
+content:
+  CORE DESIGN: One-to-many: each AstNode maps to zero, one, or MANY ControlFlowNodes.
+    Each ControlFlowNode maps to exactly ONE AstNode.
+  WHY MANY: Multiple execution paths can flow through a single code statement. Example:
+    try-finally block with conditional breaks — close_resource() has three distinct
+    control flow paths: normal execution, exception handling, and loop breaks.
+  UNREACHABLE DETECTION QUERY:
+    "Any AstNode that is unreachable has no paths flowing through it. Therefore, any
+    AstNode without a corresponding ControlFlowNode is unreachable."
+    Query should target statement nodes specifically (not all AstNodes) — modules
+    have no source code representation, causing false positives if not filtered.
+  BASICBLOCK ANALYSIS:
+    BasicBlocks aggregate ControlFlowNodes into larger units with similar reachability.
+    Reduces computational overhead — fewer blocks than individual nodes.
+    Key predicate: strictlyReaches() — checks inter-block reachability.
+    Use: identify mutually exclusive code blocks by checking whether basic blocks can
+    reach each other via strictlyReaches().
+  DOMINATOR ANALYSIS: CodeQL provides dominator tree analysis for Python CFGs,
+    enabling post-dominance queries for resource-leak detection.
+  CLASSIFICATION: FLOW-NATIVE (full CFG with dominators)
+  TOOLS: CodeQL (Python CFG library — codeql/python)
+<<<END>>>
+
+
+SOURCE
+id: 39
+ts: 2026-05-29T10:50:00Z
+relevance: HIGH
+title: pylint W0150 lost-exception (return/break in finally silences exception)
+authors: pylint-dev
+year: 2024
+venue: pylint readthedocs
+quality: DOCS
+url: https://pylint.readthedocs.io/en/latest/user_guide/messages/warning/lost-exception.html
+keywords: lost-exception, finally, return, break, exception silenced, W0150
+cites:
+cited_by:
+content:
+  RULE ID: W0150 (lost-exception)
+  WHAT IT FLAGS: "break or return statement found inside the finally clause of a
+    try...finally block: the exceptions raised in the try clause will be silently
+    swallowed instead of being re-raised."
+  EXAMPLE:
+    def calculate_speed(distance, time):
+        try:
+            return distance / time
+        except ZeroDivisionError as e:
+            raise FasterThanLightError() from e
+        finally:
+            return 299792458  # W0150: FasterThanLightError is lost!
+  FLOW PROPERTY: Control flow analysis of finally blocks. Detects whether the finally
+    block contains a return or break that would cause exception to be swallowed.
+    Specifically: "if any path through the finally block exits via return/break, the
+    exception in flight is discarded." This is a SHALLOW CFG property: is there a
+    return/break in the finally clause body?
+  EQUIVALENT RULES: CodeQL py/exit-from-finally (same pattern), ruff B012 (same pattern)
+  CLASSIFICATION: AST-LINT (syntactic: return/break present in finally). The semantic
+    consequence is a flow property (exception suppression).
+  TOOLS: pylint (W0150), CodeQL (py/exit-from-finally), ruff/bugbear (B012)
+<<<END>>>
+
+SOURCE
+id: 40
+ts: 2026-05-29T10:51:00Z
+relevance: HIGH
+title: pylint W2901 / ruff PLW2901 redefined-loop-name (Loop Variable Reassignment)
+authors: pylint-dev, astral-sh
+year: 2024
+venue: pylint readthedocs, ruff docs
+quality: DOCS
+url: https://docs.astral.sh/ruff/rules/redefined-loop-name/
+keywords: redefined-loop-name, loop variable reassignment, PLW2901, W2901
+cites:
+cited_by:
+content:
+  RULE IDs: W2901 (pylint redefined-loop-name), PLW2901 (ruff re-implementation)
+  WHAT IT FLAGS: "Redefinition of a loop variable inside the loop's body causes its
+    value to differ from the original loop iteration for the remainder of the block,
+    in a way that will likely cause bugs."
+  BEHAVIOR: In Python, for loops and with statements don't define their own scopes.
+    A nested loop using the same target variable as an outer loop reuses the same
+    variable; the inner loop's final value "leaks out" into the remainder of the outer loop.
+  EXAMPLE: for x in items: x = x.strip()  # x is now stripped value, not original item
+  FALSE POSITIVE: Augmented assignment (x += 1) is sometimes incorrectly flagged —
+    in-place augmented assignment (PLW2901 issue #7273). The rule fires on any
+    reassignment to the loop variable, including intentional transformations.
+  CLASSIFICATION: AST-LINT (syntactic: assignment to loop variable within loop body).
+    No CFG needed — pure AST pattern matching.
+  TOOLS: pylint (W2901), ruff (PLW2901)
+<<<END>>>
+
+SOURCE
+id: 41
+ts: 2026-05-29T10:52:00Z
+relevance: MED
+title: ruff RET504/RET505/RET506 — Unnecessary Variable Assignment Before Return
+authors: astral-sh
+year: 2024
+venue: ruff docs
+quality: DOCS
+url: https://docs.astral.sh/ruff/rules/unnecessary-assign/
+keywords: unnecessary-assign, dead store, RET504, RET505, RET506, return optimization
+cites:
+cited_by:
+content:
+  RULE IDs:
+    RET504 (unnecessary-assign): "Variable assignment immediately before return of
+      that variable is unnecessary. The variable assignment is not necessary, as the
+      value can be returned directly."
+    RET505 (superfluous-else-return): Checks for else statements with a return in
+      the preceding if block. The else is redundant since the if already returns.
+    RET506 (superfluous-else-raise): Same as RET505 but for raise in preceding if.
+  FLOW PROPERTY: RET504 is a LIMITED dead-store check: it only catches the specific
+    pattern of `x = expr; return x` — the assignment is unnecessary because x is
+    immediately returned. This is simpler than full liveness analysis (which would
+    catch any dead store regardless of what follows).
+  RET505/RET506 FLOW PROPERTY: Requires knowing that the if block always exits (via
+    return/raise), making the else branch's execution condition unconditional. This
+    IS a CFG property: if the if-block always terminates, the else is effectively a
+    new block with no special condition.
+  KNOWN ISSUES:
+    - RET504 false positive when variable is built up incrementally before return
+      (issue #2950).
+    - RET505/RET506 don't work for else after return/raise inside try/except (issue #9625).
+  CLASSIFICATION:
+    RET504: FLOW-NATIVE (limited dead-store check, but shallow — only immediate return)
+    RET505/RET506: FLOW-NATIVE (requires knowing prior if-block terminates)
+  TOOLS: ruff (RET504, RET505, RET506); pylint (R1705 no-else-return)
+<<<END>>>
+
+SOURCE
+id: 42
+ts: 2026-05-29T10:53:00Z
+relevance: HIGH
+title: pyright reportUninitializedInstanceVariable — Uninitialized Attribute Detection
+authors: Microsoft
+year: 2024
+venue: pyright GitHub issues
+quality: DOCS
+url: https://github.com/microsoft/pyright/issues/3431
+keywords: reportUninitializedInstanceVariable, instance attribute, uninitialized, dataflow, pyright
+cites:
+cited_by:
+content:
+  RULE ID: reportUninitializedInstanceVariable (pyright)
+  WHAT IT FLAGS: Instance attributes that are declared (type-annotated) in the class
+    body but not initialized in __init__ or any always-executing code path.
+  FLOW PROPERTY: Requires checking: (1) all annotations in class body, (2) whether
+    each annotated attribute is assigned in __init__ on ALL control flow paths, or
+    in __init__'s callees, or via class-level default.
+  FALSE POSITIVES (EXTENSIVE):
+    - Dataclasses: attributes initialized by @dataclass generated __init__ — pyright
+      sometimes doesn't recognize (issue #3431, #9623).
+    - ABC subclasses: abstract class attributes not initialized in abstract base (issue
+      #5103, #8205).
+    - @dataclass field(init=False): Pyright does not check that field is initialized in
+      __post_init__ (issue #4701).
+    - unittest setUp methods: attributes initialized in setUp not recognized (discussion
+      #4834).
+    - NamedTuple: false positives on v1.1.368+ (issue #8184).
+    - Constructor-called reset() methods: pyright doesn't track through helper methods.
+  BASEDPYRIGHT: Provides "improved logic for detecting uninitialized instance variables"
+    as one of its benefits over standard pyright.
+  CLASSIFICATION: FLOW-NATIVE (requires intra-procedural dataflow within __init__ to
+    determine if all paths assign the attribute)
+  TOOLS: pyright (reportUninitializedInstanceVariable), basedpyright (improved version)
+<<<END>>>
+
+SOURCE
+id: 43
+ts: 2026-05-29T10:54:00Z
+relevance: HIGH
+title: ruff ARG001/ARG002 and pylint W0613 — Unused Function/Method Arguments
+authors: astral-sh, pylint-dev
+year: 2024
+venue: ruff docs, pylint docs
+quality: DOCS
+url: https://docs.astral.sh/ruff/rules/unused-function-argument/
+keywords: unused argument, ARG001, ARG002, W0613, function parameter
+cites:
+cited_by:
+content:
+  RULE IDs: ARG001 (ruff unused-function-argument), ARG002 (unused-method-argument),
+    W0613 (pylint unused-argument)
+  WHAT THEY FLAG: Function or method parameters that are defined but never referenced
+    in the function body.
+  FLOW PROPERTY: Scope-level name use tracking. After collecting all parameters as
+    name bindings, check whether each is referenced in the function body. No CFG needed
+    — purely scope-level analysis.
+  FALSE POSITIVES (EXTENSIVE):
+    - pytest fixtures: fixture name in test signature but not used directly (issue #4673)
+    - Liskov substitution: argument kept for interface compatibility (issue #15952)
+    - @singledispatch: base function args often unused (issue #18654)
+    - Stub functions that only raise NotImplementedError
+    - *args, **kwargs pattern where args is ignored
+    - @typing.override decorated methods (ruff ARG002 exempts these)
+  FIX: Prefix argument name with _ to indicate intentional non-use.
+  CLASSIFICATION: AST-LINT (scope-level: is name in function params but not referenced?)
+  TOOLS: ruff (ARG001, ARG002), pylint (W0613)
+<<<END>>>
+
+SOURCE
+id: 44
+ts: 2026-05-29T10:55:00Z
+relevance: HIGH
+title: ruff RUF059 unused-unpacked-variable / F841 unused-variable
+authors: astral-sh
+year: 2024
+venue: ruff docs
+quality: DOCS
+url: https://docs.astral.sh/ruff/rules/unused-unpacked-variable/
+keywords: unused-unpacked-variable, RUF059, F841, unpacking, dead assignment
+cites:
+cited_by:
+content:
+  RULE ID: RUF059 (unused-unpacked-variable); related: F841 (unused-variable)
+  WHAT IT FLAGS (RUF059): Variables in unpacked assignments that are never referenced.
+    Example: `x, y = get_pair(); return x` — y is never used. Flag y.
+    "A variable that is defined but never used can confuse readers."
+  DIFFERENCE FROM F841: F841 handles regular assignments (x = 1 and x is never used).
+    RUF059 handles tuple/list unpacking specifically. They were split because detection
+    and fix patterns differ.
+  EXAMPLE:
+    Problem: x, y = get_pair(); return x  # y unused
+    Fix:     x, _ = get_pair(); return x  # or simply x, _ = ...
+  RESPECTS: lint.dummy-variable-rgx — variables matching pattern (e.g., _ or _unused)
+    are excluded from flagging.
+  ADDED: ruff v0.13.0
+  SCOPE: Only within function scopes.
+  CLASSIFICATION: AST-LINT (scope-level: is unpacked name referenced in scope?)
+    Not full liveness — only checks "ever referenced at all" not "last write unreached."
+  TOOLS: ruff (RUF059, F841), pylint (W0612)
+<<<END>>>
+
+SOURCE
+id: 45
+ts: 2026-05-29T10:56:00Z
+relevance: HIGH
+title: pylint W0707 raise-missing-from (Exception Chaining / Missing from Clause)
+authors: pylint-dev
+year: 2024
+venue: pylint readthedocs
+quality: DOCS
+url: https://pylint.readthedocs.io/en/stable/user_guide/messages/warning/raise-missing-from.html
+keywords: raise-missing-from, exception chaining, W0707, from clause, exception context
+cites:
+cited_by:
+content:
+  RULE ID: W0707 (raise-missing-from)
+  WHAT IT FLAGS: A `raise` statement inside an `except` block that doesn't use the
+    `from` keyword to chain exceptions. When raising a new exception inside an except
+    block, using `raise NewError() from original_error` (or `from None` to suppress)
+    preserves the exception chain context. Without `from`, Python automatically adds
+    "During handling of the above exception, another exception occurred" context.
+  FLOW PROPERTY: Needs to know: (1) raise is inside an except block (scope/AST check),
+    (2) the raise doesn't use `from` keyword. This is AST-level checking — no CFG.
+  CLASSIFICATION: AST-LINT
+  TOOLS: pylint (W0707), ruff (B904 abstract-base-class-without-abstract-method
+    equivalent — no exact match; TRY200 is related but removed), flake8-bugbear (B904)
+<<<END>>>
+
+
+SOURCE
+id: 46
+ts: 2026-05-29T11:00:00Z
+relevance: HIGH
+title: pylint E0601 / E0602 / E0606 — Three-Way Distinction: undefined vs before-assignment vs possibly-before-assignment
+authors: pylint-dev
+year: 2024
+venue: pylint readthedocs
+quality: DOCS
+url: https://pylint.readthedocs.io/en/latest/user_guide/messages/error/used-before-assignment.html
+keywords: E0601, E0602, E0606, undefined variable, used before assignment, possibly used before assignment
+cites:
+cited_by:
+content:
+  THREE DISTINCT RULE IDs:
+    E0602 (undefined-variable): "Undefined variable %r accessed." Variable has NEVER
+      been defined in any accessible scope. Equivalent to pyflakes F821.
+    E0601 (used-before-assignment): "Local variable %r referenced before assignment."
+      Variable IS assigned somewhere in the function but the assignment hasn't occurred
+      yet at the point of USE. DEFINITE use-before-def on all paths.
+    E0606 (possibly-used-before-assignment): "Possibly using variable %r before
+      assignment." Variable might be used before assignment DEPENDING ON control flow
+      — only on some paths does the assignment occur before the use.
+  KEY BEHAVIORAL DETAILS (from docs):
+    E0601: "Assignments in try blocks are assumed not to have occurred when evaluating
+      associated except/finally blocks, and assignments in except blocks are assumed
+      not to have occurred when evaluating statements outside the block, except when the
+      associated try block contains a return statement."
+    NOTE: This means pylint DOES model try/except control flow for E0601.
+  E0606 FALSE POSITIVES (known issues):
+    - Doesn't understand never-returning functions (NoReturn) — issue #9627
+    - Doesn't understand negation of conditionals (issue #9628)
+    - E0606 doesn't understand validation done in external function (issue #9715)
+    - False positive for pytest.skip and other NoReturn functions (issue #9674)
+  FLOW PROPERTY:
+    E0602: AST-LINT (scope-level name presence)
+    E0601: FLOW-NATIVE (CFG reaching definitions — definite path analysis)
+    E0606: FLOW-NATIVE (CFG join-point analysis — may-reach analysis)
+  TOOLS: pylint (E0601, E0602, E0606); pyright (reportUnboundVariable for E0602/E0601,
+    reportPossiblyUnbound for E0606); mypy (possibly-undefined for E0606);
+    pyflakes (F821 for E0602, F823 for E0601)
+<<<END>>>
+
+SOURCE
+id: 47
+ts: 2026-05-29T11:01:00Z
+relevance: HIGH
+title: ruff CFG Implementation Status — Issue #17065 and PR #17064
+authors: astral-sh (dylwil3 et al.)
+year: 2025
+venue: GitHub astral-sh/ruff
+quality: CODE
+url: https://github.com/astral-sh/ruff/issues/17065
+keywords: ruff CFG, control flow graph, unreachable code, ruff liveness, implementation status
+cites:
+cited_by:
+content:
+  STATUS: Active development as of March 2025. PR #17064 "Reimplement the control flow
+    graph" was being merged incrementally.
+  SCOPE: Re-implementation of ruff's CFG for "finer analyses and improve correctness
+    of some lint rules."
+  IMPLEMENTATION PLAN:
+    - CFG struct and builder setup with visualization and snapshot testing
+    - Basic jumps (return and raise)
+    - Loops (for and while with continue and break)
+    - Switch statements (if and match)
+  CURRENT STATE: "Implementation currently being a maximal over-approximation where
+    no control flow is modeled and all statements are counted as reachable."
+    i.e., ruff currently does NOT have a true CFG for most rules — most ruff rules
+    are AST-based or scope-based, not flow-graph-based.
+  SIGNIFICANCE FOR pflow: This confirms that ruff's existing rules (F841, F401, B-rules)
+    are predominantly AST-LINT, not FLOW-NATIVE. True CFG-based detectors in ruff
+    are pending the CFG reimplementation.
+  TOOLS: ruff (tracking issue for CFG)
+<<<END>>>
+
+SOURCE
+id: 48
+ts: 2026-05-29T11:02:00Z
+relevance: HIGH
+title: pyright Type Narrowing — CFG-Based Type State Propagation
+authors: Microsoft (Eric Traut)
+year: 2024
+venue: pyright/docs/type-concepts-advanced.md
+quality: DOCS
+url: https://github.com/microsoft/pyright/blob/main/docs/type-concepts-advanced.md
+keywords: type narrowing, FlowNode, CFG, isinstance, assignment narrowing, pyright
+cites:
+cited_by:
+content:
+  MECHANISM: Pyright uses "type narrowing" to track the type of expressions based on
+    code flow. The implementation uses FlowNode analysis — pyright builds a FlowGraph
+    (CFG variant) and propagates type state through it.
+  NARROWING FORMS:
+    - isinstance(val, int): narrows val to int inside if-block, str in else-block
+    - `val is None`: narrows to None (if branch) / non-None (else branch)
+    - Aliased conditional: `c = a is not None; if c: ...` — c used in conditional
+      also narrows the type of a.
+    - Assignment narrowing: assigning int to float|str|complex narrows type to int
+      at that assignment point.
+  JOIN BEHAVIOR: "Once the code flow of a conditional block merges with the main body,
+    the narrowed type becomes a union of the possible types from both branches because
+    the type checker cannot statically predict whether the conditional block will execute."
+  Special handling: Any is NOT narrowed except for isinstance/issubclass/class match.
+  UNREACHABLE DETECTION: Code becomes unreachable when narrowed type becomes Never.
+    Example: `if isinstance(x, int) and isinstance(x, str):`  — x can't be both int
+    and str, so this condition is always False (redundant-expr/mypy or unreachable in pyright).
+  IMPLEMENTATION LAYER: Pyright is unique among Python linters in building a full
+    CFG (via FlowNode analysis) to drive not just type narrowing but also unbound
+    variable detection (reportPossiblyUnbound), unreachable code (reportUnreachable),
+    and Optional safety (reportOptional*).
+  CLASSIFICATION: FLOW-NATIVE (full CFG with type-state lattice)
+  TOOLS: pyright (type narrowing infrastructure powers all diagnostics)
+<<<END>>>
+
+SOURCE
+id: 49
+ts: 2026-05-29T11:03:00Z
+relevance: MED
+title: ruff B018 useless-expression / B020 loop-variable-overrides-iterator
+authors: astral-sh
+year: 2024
+venue: ruff docs
+quality: DOCS
+url: https://docs.astral.sh/ruff/rules/useless-expression/
+keywords: useless expression, B018, B020, pointless statement, loop-variable-overrides-iterator
+cites:
+cited_by:
+content:
+  RULE ID: B018 (useless-expression), B020 (loop-variable-overrides-iterator)
+  B018 WHAT IT FLAGS: "Found useless expression. Either assign it to a variable or
+    remove it." Standalone expressions whose results are not used. Equivalent to
+    pylint W0104 (pointless-statement).
+    FALSE POSITIVES: Attribute access with side effects (issue #10536), descriptor
+    accesses (issue #9082).
+  B020 WHAT IT FLAGS: "Loop control variable {name} overrides the loop iterable."
+    `for items in items:` — the loop variable shadows the iterable being iterated.
+    This can lead to confusing behavior or bugs after the loop.
+  CLASSIFICATION: Both AST-LINT
+  TOOLS: ruff (B018, B020)
+<<<END>>>
+
+
+SOURCE
+id: 50
+ts: 2026-05-29T11:10:00Z
+relevance: HIGH
+title: MASTER CLASSIFICATION TABLE — All Detectors by Flow-Native vs AST-Lint
+authors: (synthesis record — all sources above)
+year: 2026
+venue: synthesis
+quality: DOCS
+url: (synthesis)
+keywords: classification, flow-native, AST-lint, ranking, CFG, dataflow, detectors
+cites: all preceding records
+cited_by:
+content:
+  CLASSIFICATION CRITERIA:
+    FLOW-NATIVE: Correctness requires a CFG, reaching definitions, dominators,
+      post-dominators, liveness, or type-state lattice.
+    AST-LINT: Detectable via AST pattern matching or simple scope-level name tracking;
+      no control-flow traversal required for correct detection.
+    Note: "Syntactic + Flow Effect" = syntactically simple to DETECT but represents a FLOW PROPERTY.
+
+  ============================================================
+  FLOW-NATIVE DETECTORS
+  ============================================================
+
+  1. USE-BEFORE-DEFINITION (possibly-unbound, branching case)
+     FLOW PROPERTY: Reaching definitions / dominator analysis. Every path from
+       function entry to USE must pass through a DEF.
+     TOOLS: pyright (reportPossiblyUnbound, reportUnboundVariable), mypy (possibly-undefined),
+       pylint (E0601 used-before-assignment, E0606 possibly-used-before-assignment),
+       CodeQL (py/uninitialized-local-variable)
+     RULE IDs: E0601, E0606 (pylint); reportUnboundVariable, reportPossiblyUnbound (pyright);
+       possibly-undefined (mypy); py/uninitialized-local-variable (CodeQL); F823 (pyflakes, linear-only)
+     FALSE POSITIVE RATE: MED (try/except/finally cases; exhaustive elif chains; loops)
+     REVIEW VALUE: VERY HIGH (definite runtime error)
+     RANK: #1
+
+  2. UNREACHABLE CODE (post-terminator; type-narrowing-based)
+     FLOW PROPERTY: CFG reachability — nodes with no incoming edges from entry.
+     TOOLS: CodeQL (py/unreachable-statement), pylint (W0101, shallow),
+       pyright (reportUnreachable), mypy (--warn-unreachable), vulture
+     RULE IDs: W0101 (pylint); py/unreachable-statement (CodeQL);
+       reportUnreachable (pyright); unreachable (mypy)
+     FALSE POSITIVE RATE: LOW for post-return/raise; MED for type-narrowing-based
+     REVIEW VALUE: HIGH (dead code)
+     RANK: #2
+
+  3. INCONSISTENT / MISSING RETURN (not all paths return)
+     FLOW PROPERTY: CFG terminal-node analysis — all exits must have explicit return.
+     TOOLS: pylint (R1710), mypy (return error code), pyright (reportReturnType),
+       CodeQL (py/mixed-returns)
+     RULE IDs: R1710 (pylint); return (mypy); reportReturnType (pyright);
+       py/mixed-returns (CodeQL)
+     FALSE POSITIVE RATE: LOW (well-defined property)
+     REVIEW VALUE: HIGH (implicit None returns often bugs)
+     RANK: #3
+
+  4. DEAD STORE / ASSIGNMENT NEVER READ (full liveness)
+     FLOW PROPERTY: Liveness analysis — def-use chains; assignment with no downstream use.
+     NOTE: Most tools only check "never referenced at all in scope" (AST-LINT).
+       True dead-store (last assignment never read) is NOT implemented in pylint/pyflakes/ruff
+       as of 2024 (pylint issue #5838). Beniget library provides def-use chains for this.
+     TOOLS: pyflakes/ruff (F841 — partial: never referenced at all), pylint (W0612 — same),
+       CodeQL (py/unused-local-variable — same), beniget (true def-use chains)
+     RULE IDs: F841 (pyflakes/ruff); W0612 (pylint); py/unused-local-variable (CodeQL)
+     FALSE POSITIVE RATE: LOW for "never used at all"; HIGHER for full dead-store
+     REVIEW VALUE: HIGH for true dead-store; MED for "never used at all"
+     RANK: #4
+
+  5. RESOURCE LEAK (acquire not post-dominated by release)
+     FLOW PROPERTY: Post-dominance — every path from acquire to function exit passes
+       through release.
+     TOOLS: pylint (R1732, shallow — just checks for with-usage absence),
+       semgrep (at-exit sinks, Pro), CodeQL (full CFG), pysa/pyre (taint-based)
+     RULE IDs: R1732 (pylint); py/context-manager* (CodeQL); at-exit taint (semgrep)
+     FALSE POSITIVE RATE: MED-HIGH for shallow checks; LOW for full post-dominance
+     REVIEW VALUE: HIGH (real resource leaks)
+     RANK: #5
+
+  6. NONE DEREFERENCE / OPTIONAL MISUSE
+     FLOW PROPERTY: Type-state narrowing — None is narrowed away by isinstance/is None checks.
+     TOOLS: pyright (reportOptionalMemberAccess, reportOptionalSubscript, etc.),
+       mypy (strict-optional)
+     RULE IDs: reportOptional* (pyright); [attr-defined] on Optional (mypy)
+     FALSE POSITIVE RATE: LOW with good type annotations; HIGH without annotations
+     REVIEW VALUE: HIGH (frequent runtime errors)
+     RANK: #6
+
+  7. LOOP VARIABLE AFTER EMPTY LOOP (possibly-unbound post-loop)
+     FLOW PROPERTY: Loop-path reaching definitions — def exists only if loop body executes.
+     TOOLS: pylint (W0631), pyright (reportPossiblyUnbound), mypy (possibly-undefined)
+     RULE IDs: W0631 (pylint)
+     FALSE POSITIVE RATE: MED (false positives when loop is guaranteed to run)
+     REVIEW VALUE: HIGH (silent NameError at runtime)
+     RANK: #7
+
+  8. UNREACHABLE EXCEPT BLOCK (exception order / hierarchy)
+     FLOW PROPERTY: Exception type hierarchy + exception propagation flow — superclass
+       handler precedes subclass handler.
+     TOOLS: CodeQL (py/unreachable-except)
+     RULE IDs: py/unreachable-except (CodeQL)
+     FALSE POSITIVE RATE: LOW (well-defined exception hierarchy check)
+     REVIEW VALUE: HIGH (dead handler)
+     RANK: #8
+
+  9. REDUNDANT CONDITION / ALWAYS-TRUE-FALSE (via type narrowing)
+     FLOW PROPERTY: Type-state propagation — after narrowing, condition is always true/false.
+     TOOLS: mypy (redundant-expr), pyright (implies unreachable), ruff (PLR0133),
+       CodeQL (py/redundant-comparison, py/comparison-of-constants)
+     RULE IDs: redundant-expr (mypy); PLR0133 (ruff); py/redundant-comparison (CodeQL)
+     FALSE POSITIVE RATE: LOW for literal constants; MED for type-narrowing-based
+     REVIEW VALUE: MED (often cosmetic but catches logic errors)
+     RANK: #9
+
+  10. EXCEPTION SWALLOWING — FULL (no re-raise on any path through handler)
+      FLOW PROPERTY: CFG of except handler body — does any path through handler execute
+        a bare `raise`? If not, exception is swallowed.
+      NOTE: Current tools only check SYNTACTIC swallowing (pass/bare-except). Full
+        flow analysis needed for complex handlers.
+      TOOLS: bandit (B110 — syntactic only), pylint (W0702 — syntactic), CodeQL (py/empty-except)
+      RULE IDs: B110 (bandit); W0702 (pylint); py/empty-except (CodeQL)
+      FALSE POSITIVE RATE: LOW for syntactic case; MED for flow-based
+      REVIEW VALUE: HIGH (silent exception hiding)
+      RANK: #10
+
+  11. EXCEPTION SWALLOWING — FINALLY (return/break in finally silences exception)
+      FLOW PROPERTY: CFG escape in finally block — return/break preempts exception propagation.
+      TOOLS: pylint (W0150), CodeQL (py/exit-from-finally), ruff/bugbear (B012)
+      RULE IDs: W0150 (pylint); py/exit-from-finally (CodeQL); B012 (bugbear/ruff)
+      FALSE POSITIVE RATE: LOW (clear semantic antipattern)
+      REVIEW VALUE: HIGH (silent exception loss)
+      RANK: #11
+
+  12. LOOP VARIABLE CAPTURE (late-binding closure)
+      FLOW PROPERTY: Scope analysis + call-site analysis for closure-after-loop-use.
+      TOOLS: CodeQL (py/loop-variable-capture), bugbear/ruff (B023, syntactic only)
+      RULE IDs: py/loop-variable-capture (CodeQL); B023 (bugbear/ruff)
+      FALSE POSITIVE RATE: LOW
+      REVIEW VALUE: HIGH (classic Python gotcha)
+      RANK: #12
+
+  ============================================================
+  AST-LINT DETECTORS (no CFG needed)
+  ============================================================
+
+  A. UNUSED IMPORT (never referenced in module)
+     TOOLS: pyflakes/ruff (F401), pylint (W0611), CodeQL (py/unused-import)
+     FALSE POSITIVE RATE: LOW (re-exports, side-effect imports are exceptions)
+     REVIEW VALUE: MED
+
+  B. UNUSED VARIABLE (never referenced in scope)
+     TOOLS: ruff (F841, RUF059), pylint (W0612), CodeQL (py/unused-local-variable)
+     NOTE: "Never referenced at all in scope" — NOT true dead-store.
+     FALSE POSITIVE RATE: LOW
+
+  C. UNUSED ARGUMENT
+     TOOLS: ruff (ARG001, ARG002), pylint (W0613)
+     FALSE POSITIVE RATE: MED (interface methods, pytest fixtures)
+
+  D. MUTABLE DEFAULT ARGUMENT
+     TOOLS: pylint (W0102), bugbear/ruff (B006)
+     FALSE POSITIVE RATE: LOW
+
+  E. BARE/BROAD EXCEPT (syntactic)
+     TOOLS: pylint (W0702, W0703), ruff (E722, BLE001), bandit (B110)
+     FALSE POSITIVE RATE: LOW (syntactic pattern)
+
+  F. VARIABLE SHADOWING
+     TOOLS: pylint (W0621 redefined-outer-name)
+     FALSE POSITIVE RATE: MED (common pattern to use same name)
+
+  G. LOOP VARIABLE UNUSED IN BODY
+     TOOLS: ruff (B007, py/unused-loop-variable CodeQL)
+     FALSE POSITIVE RATE: LOW
+
+  H. COMPARISON OF CONSTANTS (two literals compared)
+     TOOLS: ruff (PLR0133), CodeQL (py/comparison-of-constants)
+     FALSE POSITIVE RATE: VERY LOW
+
+  I. REDUNDANT ELSE AFTER RETURN
+     TOOLS: pylint (R1705), ruff (RET505/RET506)
+     FALSE POSITIVE RATE: LOW-MED (try/except edge cases)
+
+  J. LOOP VARIABLE OVERRIDES ITERATOR
+     TOOLS: ruff (B020)
+     FALSE POSITIVE RATE: LOW
+
+  K. RETURN/BREAK IN FINALLY (syntactic detection)
+     TOOLS: bugbear/ruff (B012), pylint (W0150), CodeQL (py/exit-from-finally)
+     NOTE: Syntactic DETECTION, but flow semantic effect.
+
+  L. POINTLESS STATEMENT / USELESS EXPRESSION
+     TOOLS: pylint (W0104), ruff (B018)
+     FALSE POSITIVE RATE: MED
+
+  M. REDUNDANT RE-RAISE (raise as first/only in except)
+     TOOLS: pylint (W0706 try-except-raise)
+     FALSE POSITIVE RATE: LOW
+
+  N. REDEFINES LOOP VARIABLE INSIDE LOOP
+     TOOLS: ruff (PLW2901), pylint (W2901)
+     FALSE POSITIVE RATE: MED (augmented assignment false positive)
+
+  O. MISSING EXCEPTION CHAIN (raise without from)
+     TOOLS: pylint (W0707 raise-missing-from)
+     FALSE POSITIVE RATE: LOW
+
+  ============================================================
+  RANKING FOR pflow check (review value × low false-positive)
+  ============================================================
+  Rank  Detector                          Classification  FP Rate
+  1     use-before-def (possibly-unbound) FLOW-NATIVE     MED     — definite runtime error
+  2     unreachable code                  FLOW-NATIVE     LOW     — dead code
+  3     inconsistent/missing return       FLOW-NATIVE     LOW     — implicit None bugs
+  4     resource leak (post-dominance)    FLOW-NATIVE     MED     — file/lock leaks
+  5     None dereference (Optional)       FLOW-NATIVE     LOW*    — frequent runtime error (*needs types)
+  6     exception swallowing (finally)    AST+Flow        LOW     — silent exception loss
+  7     loop var post-loop (unbound)      FLOW-NATIVE     MED     — silent NameError
+  8     unreachable except block          FLOW-NATIVE     LOW     — dead handler
+  9     dead store (full liveness)        FLOW-NATIVE     LOW     — NOT YET in mainstream tools
+  10    exception swallowing (pass)       AST-LINT        LOW     — silent error hiding
+  11    loop variable capture (closures)  FLOW-NATIVE     LOW     — classic Python gotcha
+  12    redundant condition               FLOW-NATIVE     MED     — logic errors
+  
+  Lower-priority (AST-LINT, easy to add):
+  A  unused import                       AST-LINT        LOW
+  B  unused variable (never-ref)         AST-LINT        LOW
+  C  mutable default argument            AST-LINT        LOW
+  D  comparison of constants             AST-LINT        VERY LOW
+  E  redundant else after return         AST-LINT        LOW-MED
+  F  useless expression                  AST-LINT        MED
+<<<END>>>
+
+
+SOURCE
+id: 51
+ts: 2026-05-29T11:15:00Z
+relevance: HIGH
+title: Exact CFG/Dataflow Properties Required per Detector (Implementation Guide)
+authors: (synthesis record)
+year: 2026
+venue: synthesis
+quality: DOCS
+url: (synthesis — based on all above sources)
+keywords: implementation, CFG property, reaching definitions, post-dominance, liveness, def-use
+cites: records 1-50
+cited_by:
+content:
+  This record catalogs the exact flow-graph property needed per detector for a
+  pflow check implementation using CFG + dominators/post-dominators +
+  reaching-definitions + def-use chains.
+
+  ──────────────────────────────────────────────────────────────
+  DETECTOR: USE-BEFORE-DEFINITION (possibly-unbound)
+  PROPERTY: USE with no reaching DEF.
+    Formally: there exists a path from entry to USE-node that does not pass through
+    any DEF-node for the same variable.
+  ALGORITHM: Reaching definitions analysis (classic forward dataflow).
+    GEN[B] = {defs generated in B}
+    KILL[B] = {prior defs killed by B's defs}
+    IN[B] = ∩(predecessors P of B: OUT[P])  [must-reach: intersection join]
+    A USE at statement s is possibly-unbound if s's IN set doesn't include a DEF for
+    the variable. For DEFINITE unbound: use union join instead of intersection.
+  PYTHON SPECIFICS: finally blocks need special handling — they have multiple incoming
+    paths (normal + exception). Loop bodies may-not-execute (treat loop entry as
+    conditional branch with empty-body option). Exception variable erasure (Python 3
+    `except E as e` deletes `e` after the block) needs explicit DEL node in CFG.
+  ──────────────────────────────────────────────────────────────
+  DETECTOR: UNREACHABLE CODE
+  PROPERTY: CFG node (basic block) with no path from entry.
+  ALGORITHM: Forward DFS/BFS from entry node. Mark all reachable nodes. Unmarked
+    nodes are unreachable. All statements within unreachable blocks are dead code.
+  NOTE: Type-narrowing-based unreachable (pyright) additionally requires propagating
+    type lattice state; code is unreachable when type narrows to Never.
+  ──────────────────────────────────────────────────────────────
+  DETECTOR: INCONSISTENT / MISSING RETURN
+  PROPERTY: Exists a path from entry to function-exit that does not pass through
+    a `return expr` statement.
+  ALGORITHM: Backward analysis or forward analysis to find exit nodes.
+    Find all terminal CFG nodes (no successors within function).
+    For each terminal: does it correspond to a `return expr` or `raise`?
+    If any terminal is implicit fall-through, flag.
+    NoReturn annotations on called functions also terminate paths — must model.
+  ──────────────────────────────────────────────────────────────
+  DETECTOR: DEAD STORE / ASSIGNMENT NEVER READ
+  PROPERTY: DEF d with no USE u such that d reaches u (no live use downstream).
+  ALGORITHM: Liveness analysis (classic backward dataflow).
+    USE[B] = {names used in B before any def in B}
+    DEF[B] = {names defined in B}
+    OUT[B] = ∪(successors S of B: IN[S])
+    IN[B] = USE[B] ∪ (OUT[B] - DEF[B])
+    A DEF at statement s is dead if s's DEF name is not in OUT[s].
+    Alternative: build def-use chains; a DEF with empty use-set is dead.
+  ──────────────────────────────────────────────────────────────
+  DETECTOR: RESOURCE LEAK (acquire not post-dominated by release)
+  PROPERTY: acquire op a such that NOT every path from a to function-exit passes
+    through a corresponding release op.
+  ALGORITHM: Post-dominator tree computation.
+    Post-dominators: compute using reverse-CFG dominator tree.
+    release post-dominates acquire iff release is in post-dom set of acquire.
+    If release NOT in post-dom(acquire), there's a path from acquire to exit
+    without release — potential leak.
+  NOTE: Exception paths make this harder — must include exception-flow edges in CFG.
+    Python's `with` statement adds an implicit guarantee: __exit__ called on all paths
+    including exceptions. Model `with` as: __enter__ → body (with exception edge to
+    __exit__) → __exit__ → continuation.
+  ──────────────────────────────────────────────────────────────
+  DETECTOR: NONE DEREFERENCE / OPTIONAL MISUSE
+  PROPERTY: USE of variable v where v has type T | None at USE point,
+    and the USE operation is not valid on None.
+  ALGORITHM: Type-state propagation over CFG.
+    Type state: lattice where each variable has type T | None or T (narrowed).
+    After `if x is not None:`, in the true branch x has type T.
+    JOIN: union of types from all incoming edges (may-have-None on any path → type includes None).
+    A reportOptional* fires when type at USE still includes None.
+  ──────────────────────────────────────────────────────────────
+  DETECTOR: EXCEPTION SWALLOWING — FULL FLOW VERSION
+  PROPERTY: except handler body has no path that executes a bare `raise` or `raise e`.
+  ALGORITHM: Forward analysis of except body CFG.
+    Check all exit paths from except handler.
+    If no exit path passes through a raise statement, exception is swallowed.
+    This is equivalent to: `raise` is NOT reachable from any except-handler terminal.
+  ──────────────────────────────────────────────────────────────
+  DETECTOR: LOOP VARIABLE POSSIBLY-UNBOUND POST-LOOP
+  PROPERTY: Variable defined ONLY in for-loop target (DEF inside loop), and READ
+    after the loop exits, where the loop might not execute (empty iterable).
+  ALGORITHM: Treat for-loop as: entry → (maybe branch to body) → (maybe branch to after).
+    The "body doesn't execute" branch goes directly to after-loop.
+    Using reaching defs with this model: after loop, the loop-variable def does NOT
+    necessarily reach (since body might not run). Flag post-loop USE.
+  ──────────────────────────────────────────────────────────────
+  DETECTOR: UNREACHABLE EXCEPT BLOCK (exception order)
+  PROPERTY: except E2 handler where there exists a preceding except E1 handler such
+    that E2 is a subclass of E1 (every E2 exception is also an E1 exception).
+  ALGORITHM: For each pair of consecutive except handlers (E1, E2): check if E2 is
+    a subclass of E1 in Python's MRO. If so, E2 handler is unreachable.
+  DATA NEEDED: Exception class hierarchy (MRO lookup via type inference).
+  ──────────────────────────────────────────────────────────────
+  DETECTOR: REDUNDANT CONDITION (via type narrowing)
+  PROPERTY: Condition is always true or always false given the type state at that point.
+  ALGORITHM: Type-state propagation over CFG. At the condition site, evaluate whether
+    the condition can ever be False (for always-true) or True (for always-false) given
+    the type lattice state. If type state implies the condition is constant, flag it.
+    Special case: `isinstance(x, int) and isinstance(x, str)` — second isinstance
+    is redundant given first (int and str share no common instances).
+  ──────────────────────────────────────────────────────────────
+  DETECTOR: RETURN/BREAK IN FINALLY (exception suppression)
+  PROPERTY: finally-block contains a control-flow escape (return/break/continue)
+    on some path, which preempts exception propagation.
+  ALGORITHM: For each finally block: check if any path through the finally block
+    exits via return/break/continue (not via fall-through to end of finally).
+    If so, any in-flight exception from the corresponding try/except is discarded.
+    Basic check: is there a return/break/continue reachable from the start of the
+    finally block before the end of the finally block?
+<<<END>>>
+
+
+SEARCH_LOG
+query: "pyflakes F821 F823 use before definition unbound variable CFG dataflow" | results: 5 useful | top: flake8rules.com F823
+query: "pylint unreachable dead code after return raise break continue rule id" | results: 5 useful | top: pylint W0101 unreachable docs
+query: "pylint dead-store assignment-never-read liveness analysis python" | results: 3 useful | top: pylint #5838 issue + vulture
+query: "pyright reportPossiblyUnbound reportUnboundVariable dataflow analysis" | results: 6 useful | top: pyright configuration.md
+query: "ruff static analysis detectors rules CFG dataflow python 2026" | results: 2 useful | top: ruff CFG tracking issue
+query: "mypy inconsistent-return-statements optional dereference control flow analysis" | results: 4 useful | top: mypy error_code_list docs
+query: "CodeQL python queries use-before-definition unreachable dead code dataflow" | results: 6 useful | top: CodeQL for Python docs
+query: "semgrep python taint analysis dataflow detectors resource leak" | results: 5 useful | top: semgrep taint mode docs
+query: "pylint possibly-used-before-assignment E0606 W0631 undefined-loop-variable flow analysis" | results: 5 useful | top: E0606 docs + W0631 docs
+query: "pyflakes possibly-unbound variable finally except block analysis implementation" | results: 4 useful | top: pyflakes issue #236
+query: "pylint inconsistent-return-statements W0149 R1710 missing return path CFG" | results: 5 useful | top: R1710 docs
+query: "bandit python security static analysis detectors B001 B002 list rules" | results: 3 useful | top: bandit readthedocs
+query: "pylint W0612 unused-variable W0611 unused-import W0613 unused-argument liveness reaching definitions" | results: 4 useful | top: W0612 docs
+query: "ruff F401 F811 F841 unused variable import dead store rules description" | results: 4 useful | top: F401 ruff docs + F841 ruff docs
+query: "vulture python dead code tool whitelist confidence score implementation approach" | results: 6 useful | top: vulture GitHub README
+query: "pyright resource leak file open not closed lock post-dominance static analysis" | results: 1 useful | top: arxiv resource leak paper
+query: "pylint exception-swallowing bare-except W0702 broad-except W0703 bare-except-clauses flow" | results: 5 useful | top: W0702 docs
+query: "ruff SIM pylint redundant-condition always-true always-false constant folding tautology detection" | results: 3 useful | top: PLR0133 comparison-of-constant
+query: "pylint mutable-default-argument W0102 flake8-bugbear B006 B007 loop variable capture" | results: 4 useful | top: flake8-bugbear PyPI + B006 description
+query: "CodeQL python "py/unused-import" "py/unused-local-variable" "py/possibly-unbound-local" query help" | results: 5 useful | top: py/unused-local-variable + py/uninitialized-local-variable
+query: "pylint possibly-used-before-assignment E0606 W0631 undefined-loop-variable" | results: 5 useful | top: W0631 docs
+query: "flake8-bugbear B006 B010 B012 B016 complete rule list description dataflow" | results: 4 useful | top: flake8-bugbear README + PyPI
+query: "mypy error code return-value no-return strict-optional possibly-undefined" | results: 5 useful | top: mypy error_code_list2 docs
+query: "pyflakes source code scope binding checker reaching definitions implementation" | results: 4 useful | top: pyflakes/checker.py GitHub
+query: "pylint resource-leak W1515 consider-using-with R1732 open file not closed context manager" | results: 5 useful | top: R1732 docs + false positive issues
+query: "pylint "shadowed-variable" W0621 "redefined-outer-name" variable shadowing scope analysis" | results: 4 useful | top: W0621 docs
+query: "mypy "possibly-undefined" --enable-error-code control flow conditional branch analysis 2024" | results: 4 useful | top: mypy error_code_list2 + issue #16992
+query: "CodeQL python "py/loop-variable-capture" "py/missing-call-to-init" "py/confusing-none-return" query" | results: 5 useful | top: py/loop-variable-capture + py/mixed-returns + py/unused-loop-variable
+query: "Meta Pysa Pyre python static analysis taint dataflow security detectors 2024 2025" | results: 5 useful | top: pyre-check.org Pysa basics
+query: "ruff rules PERF ERA B RUF dead code unreachable constant folding" | results: 3 useful | top: ruff rules index
+query: "pylint W0611 W0612 variables checker implementation scope binding AST visitor source code" | results: 3 useful | top: pylint checker architecture docs
+query: "pylint "pointless-statement" W0104 "expression-not-assigned" constant condition always-true" | results: 4 useful | top: W0104 docs
+query: "ruff "comparison-of-constant" PLR0133 "literal-membership" constant-condition tautology python" | results: 4 useful | top: PLR0133 docs
+query: "CodeQL "py/constant-condition" "py/redundant-comparison" constant folding" | results: 5 useful | top: py/redundant-comparison + py/constant-conditional-expression
+query: "bandit exception-swallowing B110 try-except-pass B112 try-except-continue" | results: 5 useful | top: B110 bandit docs + B112 bandit docs
+query: "pyright "reportUnreachable" unreachable code type narrowing always-false branch" | results: 5 useful | top: basedpyright new-diagnostic-rules
+query: "pylint "W0120" "useless-else-on-loop" "no-else-return" R1705" | results: 3 useful | top: R1705 + W0120 docs
+query: "python static analysis "reaching definitions" "live variables" "def-use chain"" | results: 5 useful | top: beniget + scalpel framework paper
+query: "basedpyright reportUnreachable unreachable code improvements over pyright" | results: 5 useful | top: basedpyright new-diagnostic-rules docs
+query: "ruff "return-in-finally" "break-in-finally" B012 equivalent SIM" | results: 4 useful | top: ruff jump-statement-in-finally B012 docs
+query: "pyright mypy "type guard" "never type" exhaustiveness check unreachable" | results: 5 useful | top: typing.python.org unreachable guide
+query: "CodeQL python "py/missing-return-exception" "py/unreachable-statement" all query IDs" | results: 5 useful | top: CodeQL Python query help index
+query: "pylint "W0150" lost-exception finally swallow exception flow property" | results: 4 useful | top: W0150 docs + pylint-errors
+query: "ruff "redefined-loop-name" PLW2901 loop variable reassignment dataflow" | results: 4 useful | top: PLW2901 ruff docs
+query: "pylint "consider-using-sys-exit" "raise-missing-from" "W0707" exception chaining" | results: 4 useful | top: W0707 raise-missing-from docs
+query: "pyright "reportUninitializedInstanceVariable" attribute uninitialized member access" | results: 5 useful | top: basedpyright improved detection + multiple pyright issues
+query: "ruff "unused-unpacked-variable" RUF019 dead store rules" | results: 3 useful | top: RUF059 unused-unpacked-variable docs
+query: "ruff ARG001 ARG002 unused function argument method argument" | results: 4 useful | top: ARG001 docs + false positive issues
+query: "ruff support control flow graph CFG implementation issue 2024 2025" | results: 4 useful | top: ruff PR #17064 + issue #17065
+query: "pyright type narrowing assignment narrowing isinstance control flow implementation" | results: 5 useful | top: pyright FlowNode analysis docs + deepwiki
+query: "pylint "undefined-variable" E0602 vs "used-before-assignment" E0601" | results: 5 useful | top: E0601 + E0606 docs with distinction
+query: "ruff "B018" "useless-expression" "B020" "loop-variable-overrides-iterator"" | results: 4 useful | top: B018 + B020 ruff docs
+query: "python static analysis ranking detectors false positive rate precision recall" | results: 3 useful | top: arxiv warning ranking paper
+<<<END>>>
+
+GAPS
+- Dead store (last-assignment-never-read) detector: no mainstream Python linter implements full
+  liveness-based dead-store detection (pylint issue #5838 is open). Only beniget library
+  provides def-use chains needed for this; no standalone checker ships it.
+- Pyflakes possibly-unbound for try/finally: pyflakes issue #236 and mypy issue #17387
+  both track this gap — the "variable assigned in try-body, read in finally, before assignment"
+  case is NOT reliably detected by any mainstream tool.
+- Pyflakes does NOT detect the Python 3 "except variable erasure" case (issue #345).
+- pylint E0606 does not understand NoReturn functions (#9627, #9628) — false positives.
+- Full post-dominance resource-leak detector: no Python linter (other than CodeQL/semgrep Pro)
+  implements the full post-dominance property for acquire/release checking. pylint R1732 is
+  a shallow heuristic only.
+- Full exception-swallowing flow detector (no re-raise on any except-body path): only CodeQL
+  implements this; bandit/pylint only check syntactic `pass` or `except:` patterns.
+- Ruff does NOT have a true CFG as of early 2025 — most rules are AST-based (confirmed by
+  ruff issue #17065 / PR #17064 tracking the reimplementation).
+- Scalpel framework (Python CFG builder from arxiv 2202.11840): could not fetch PDF content —
+  gap in coverage of this Python CFG library.
+- bandit: full rule catalog with precise descriptions not found — only B110, B112 details
+  confirmed. B001-B4xx range mentioned but individual rule descriptions not exhaustively fetched.
+- Inter-procedural dead-store detection (assignment in caller, never read by caller or callee):
+  no Python linter performs interprocedural liveness; only Pysa/CodeQL could approximate.
+- True "redundant re-assignment" (x = expr1; ... x = expr2, first assignment never read):
+  distinct from "never used at all" — no tool implements this correctly for Python.
+<<<END>>>
+

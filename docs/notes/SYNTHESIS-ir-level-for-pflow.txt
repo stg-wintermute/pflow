@@ -1,0 +1,413 @@
+WHAT IR LEVEL SHOULD PFLOW USE FOR GRAPH CREATION AND SERVING?
+
+Synthesis
+Authors:   --
+Created:   2026-05-30
+Sources:   18 records retrieved across 6 files (corpus total: 223 records, 7 non-empty files)
+Mode:      participatory
+
+
+0.  READ THIS FIRST — CRITICAL CORPUS GAP
+
+    The two files that are EXACTLY on-topic for this question are EMPTY
+    placeholders with zero records:
+
+      - representation-taxonomy-research.miner   (0 records)
+        topic: "Compiler Intermediate Representations - analysis/transformation
+        fit, with focus on CFG+dominators, SSA variants, PDG/SDG, RVSDG,
+        Sea-of-Nodes, CPS/ANF/SSA equivalence, e-graphs, polyhedral"
+      - ir-to-clean-code-research.miner          (0 records)
+        topic: "IR/graph-representation to clean structured human-readable
+        source code - control-flow structuring, goto elimination, decompiler
+        structuring, SSA destruction, e-graphs/equality saturation,
+        Sea-of-Nodes/RVSDG scheduling, polyhedral code generation"
+
+    Confirmed via `mq stats .` (neither file appears) and `mq meta .` (both
+    show 0rec, IN_PROGRESS). The maintainer's suspicion was correct.
+
+    CONSEQUENCE: Half of the candidate IRs the maintainer asked about have NO
+    primary evidence in this corpus. The following terms return ZERO hits from
+    `mq grep` across all 7 populated files:
+      - RVSDG / "value-state" / regionalized        -> 0 hits
+      - Sea-of-Nodes / "sea of nodes" / soup         -> 0 hits
+      - SSA / phi / "single static assignment"       -> 0 SUBSTANTIVE hits
+        (the one "SSA" grep hit, slice-cohesion:25 JDeodorant, is the unrelated
+         "object state slice" string; differential-analysis hits are AST/CFG
+         diffing, not SSA)
+      - CPS / ANF / continuation / A-normal           -> 0 SUBSTANTIVE hits
+        (grep hits are CPython flowgraph.c and exception-table "continuation
+         bit" - NOT functional IR)
+      - e-graph / equality saturation / eqsat         -> 0 hits
+      - polyhedral / polytope / affine / loop-nest    -> 0 SUBSTANTIVE hits
+        (only "loop nesting depth" as a complexity metric, not the model)
+
+    So this synthesis can give EVIDENCE-GROUNDED answers only for:
+      - CFG + dominators/post-dominators (the current choice)
+      - PDG (Program Dependence Graph) and SDG (System Dependence Graph)
+      - Source-level structuring / SESE for regeneration (essential complexity,
+        Tuck/Wedge, edge contraction)
+
+    For SSA, RVSDG, Sea-of-Nodes, CPS/ANF, e-graphs, and polyhedral, the corpus
+    is SILENT. Any recommendation on those must come from a new miner run, NOT
+    from this corpus. They are flagged [NO CORPUS EVIDENCE] throughout and a new
+    run is requested in section 4.
+
+
+1.  Overview
+
+    The populated corpus covers, with depth and peer-reviewed primary sources:
+    (a) the CFG+dominators+def-use substrate pflow already has; (b) the PDG/SDG
+    family and program slicing built on top of it; (c) slice-based cohesion and
+    function-decomposition refactoring; (d) control-flow complexity metrics
+    including essential complexity (the "how structured is this?" measure that
+    bears directly on clean regeneration); and (e) Python-specific CFG
+    construction (CPython bytecode) and flow-native bug detection.
+
+    What it does NOT cover is the entire "value-flow / functional IR" axis of
+    the maintainer's question (SSA and beyond) and the codegen/scheduling side
+    of regeneration (RVSDG/Sea-of-Nodes scheduling, polyhedral codegen, SSA
+    destruction). The corpus answers "CFG vs PDG, and how to get from a
+    dependence graph back to clean structured source" very well; it cannot speak
+    to "SSA vs RVSDG vs Sea-of-Nodes" at all.
+
+
+2.  Key Findings
+
+    2.1.  The current substrate (CFG + dominators + def-use) is the CORRECT
+          BASE LAYER, and the corpus treats it as the thing everything else is
+          BUILT FROM rather than an alternative to other IRs.
+
+          Every higher structure in the corpus is defined as a function of CFG +
+          (post-)dominators + reaching definitions:
+            - Control dependence = post-dominator frontier on the reverse CFG;
+              PDG construction Step 1-3 takes "Input: CFG of a procedure" and
+              computes the post-dominator tree, then derives control-dependence
+              edges. [ref: pdg-slicing-research.miner:1]
+            - Data dependence edges = "Standard reaching definitions / def-use
+              chains." [ref: flow-complexity-metrics.miner:13]
+            - The pflow metric table explicitly computes slice cohesion, control-
+              dependence fan-out, DepDegree, live-range, essential complexity,
+              etc. all from "CFG + def-use + post-dominators / dominators."
+              [ref: flow-complexity-metrics.miner:29]
+          So the maintainer's instinct to keep the CFG form is well supported:
+          the corpus never proposes replacing the CFG; it proposes LAYERING a
+          dependence graph on top of it.
+          Confidence: HIGH (consistent across pdg-slicing:1, flow-complexity:13,
+          flow-complexity:29, and the pflow algorithm sketch slice-cohesion:49)
+
+    2.2.  For ANALYSIS (slicing, cohesion, dependence questions), the corpus
+          recommends the PDG, because it turns slicing from iterative dataflow
+          into a single graph-reachability traversal.
+
+          Weiser's original slice is an iterative backward dataflow fixpoint over
+          the CFG, O(V^2 * N). [ref: pdg-slicing-research.miner:3]
+          Ottenstein & Ottenstein showed a backward slice = "all vertices w such
+          that there exists a directed path from w to [criterion] v in the PDG,"
+          reducing slicing to BFS/DFS, O(V + E) in the size of the PDG.
+          [ref: pdg-slicing-research.miner:2]
+          The PDG bundles BOTH control and data edges so a single backward
+          traversal is semantically correct; a data-edges-only traversal is
+          provably WRONG (Weiser's if/print(y) example: the predicate must be in
+          the slice or the assignment runs unconditionally).
+          [ref: pdg-slicing-research.miner:3]
+          IMPLICATION FOR pflow: pflow already has the inputs (CFG, post-doms,
+          def-use). Building the PDG is a derivation, not a new front end. The
+          pflow algorithm sketch already assumes this: "build PDG from pflow's
+          CFG + def-use, then do backward reachability."
+          [ref: slice-cohesion-refactoring.miner:49]
+          Confidence: HIGH (three primary peer-reviewed sources agree:
+          pdg-slicing:1, :2, :3)
+
+    2.3.  For INTERPROCEDURAL analysis, the upgrade from PDG is the SDG (System
+          Dependence Graph), but it carries real construction cost and a
+          correctness hazard pflow would have to handle.
+
+          The SDG adds entry/call/actual-in/actual-out/formal-in/formal-out
+          vertices plus parameter and summary edges to connect per-procedure
+          PDGs. Slicing becomes a TWO-PASS traversal to avoid "unrealizable
+          paths" (entering a procedure from one call site and exiting to a
+          different one). [ref: pdg-slicing-research.miner:4]
+          COST: summary-edge computation is O(n^3) preprocessing (CFL-reachability
+          / attribute grammar), then O(n^2) per slice query.
+          [ref: pdg-slicing-research.miner:4]
+          So intraprocedural PDG slicing is cheap (linear), but going whole-
+          program is a cubic-preprocessing commitment.
+          Confidence: HIGH (Horwitz-Reps-Binkley primary, corroborated by the
+          duplicate SDG record slice-cohesion-refactoring.miner:19/:41)
+
+    2.4.  For SIMPLIFICATION (pflow's primary mission), the recommended unit is
+          the slice + the SESE region, derived from PDG/dominators - NOT a new
+          IR.
+
+          The function-decomposition pipeline the corpus converges on:
+            - Compute decomposition slices per output variable (backward
+              reachability on the PDG). [ref: slice-cohesion-refactoring.miner:49]
+            - Cluster output variables by pairwise slice overlap (Jaccard) to
+              find natural splits. [ref: slice-cohesion-refactoring.miner:18]
+            - Grow a seed to the minimal single-entry/single-exit (SESE) region
+              that is actually extractable - the "Wedge" step. The SESE
+              constraint is what makes extraction valid; "arbitrary subsets of
+              statements cannot be extracted because they may not form valid
+              control flow." [ref: slice-cohesion-refactoring.miner:9]
+            - An alternative non-slice route: successive edge contraction on a
+              method-local dependence graph ("contract strongly-coupled
+              statements into atomic segments, then find optimal segment
+              groupings"). [ref: slice-cohesion-refactoring.miner:43]
+          The reference Python implementation in this space (acheshkov/
+          program_slicing) layers exactly CFG -> CDG -> DDG -> PDG (= CDG + DDG),
+          all as networkx DiGraphs, on tree-sitter - i.e. the same layering this
+          synthesis recommends, in Python. [ref: slice-cohesion-refactoring.miner:27]
+          Confidence: HIGH for the slice+SESE approach (Lakhotia/Deprez,
+          Gold/Harman, pflow sketch agree); MEDIUM for edge-contraction as an
+          alternative (single preprint source, slice-cohesion:43).
+
+    2.5.  For REGENERATION to clean source, the corpus's answer is CONTROL-FLOW
+          STRUCTURING measured by ESSENTIAL COMPLEXITY - a CFG-reduction
+          technique - NOT a value-IR scheduling technique.
+
+          The corpus's only grounded regeneration-quality signal is essential
+          complexity ev(G): iteratively collapse single-entry/single-exit
+          (structured) subgraphs to single nodes; whatever survives is the
+          irreducible, "unstructurable" residue. ev(G)=1 means fully structured
+          (cleanly regenerable); ev(G)>1 counts the goto-like tangles that
+          "CANNOT be replaced by structured equivalents without adding boolean
+          flags or duplicating code." [ref: flow-complexity-metrics.miner:2]
+          "ev(G) - 1 = number of unstructured 'excess' control flows to
+          eliminate"; "essential complexity = 1 is the refactoring target."
+          [ref: flow-complexity-metrics.miner:2]
+          The Ada/gnatmetric variant operationalizes this for a real language:
+          early return/raise/goto out of a compound statement count as
+          non-structural; short-circuit boolean forms do not.
+          [ref: flow-complexity-metrics.miner:21]
+          IMPLICATION: For pflow's regeneration goal, the corpus says the lever
+          is "reduce ev(G) to 1 by structuring the CFG," computed on the SAME
+          CFG+dominators pflow already has. It says NOTHING about whether a
+          value-IR (RVSDG/Sea-of-Nodes) would make regeneration easier - that is
+          precisely the gap (see 2.7).
+          Confidence: HIGH for ev(G) as the structuring metric; the claim that
+          this is *the* regeneration strategy is the corpus's framing, but it is
+          only one half of the regeneration problem (control structuring) and
+          says nothing about data/value scheduling.
+
+    2.6.  pflow's existing front end is Python-source / CPython-bytecode shaped,
+          and the corpus documents that this CFG form is the natural fit for
+          Python.
+
+          CPython itself uses a basic-block CFG (basicblock struct, b_next,
+          exception stack per block) - the same shape pflow uses.
+          [ref: bytecode-cfg-research.miner:7]
+          The Python-native def-use option (beniget) builds explicit def->use
+          edges on a generic AST but is explicitly "non-data-dependent" (no path-
+          sensitivity; "conditional assignments don't guarantee definitions") and
+          cannot handle eval/exec/star-imports/globals().
+          [ref: static-analysis-detectors-research.miner:33]
+          The flow-native bug detectors pflow targets (use-before-def,
+          unreachable code, resource-leak post-dominance) are classified as
+          requiring exactly "CFG, reaching definitions, dominators, post-
+          dominators, liveness." [ref: static-analysis-detectors-research.miner:50]
+          IMPLICATION: The analysis and detection workloads are satisfied by the
+          current substrate + a derived PDG. There is no evidence in the corpus
+          that a lower/different IR is needed for the ANALYSIS jobs.
+          Confidence: HIGH
+
+    2.7.  [NO CORPUS EVIDENCE] The value-flow IR family - the heart of the
+          maintainer's "is there a better LEVEL?" question - is entirely absent.
+
+          SSA, RVSDG, Sea-of-Nodes, CPS/ANF, e-graphs/equality-saturation, and
+          the polyhedral model return ZERO substantive hits (see section 0). The
+          corpus therefore CANNOT tell you:
+            - whether SSA/phi-functions would simplify pflow's def-use/dataflow
+              (the classic argument: SSA gives each value one definition, making
+              def-use trivial and reaching-defs implicit);
+            - whether RVSDG or Sea-of-Nodes - which deliberately under-specify
+              control order and re-derive a schedule - would make clean-source
+              REGENERATION easier or harder than CFG structuring;
+            - whether SSA destruction quality (the regeneration-from-SSA problem)
+              is a concern;
+            - whether e-graphs/equality saturation are worth it for rewrite-based
+              simplification;
+            - whether the polyhedral model buys anything for Python (almost
+              certainly out of scope for general Python, but the corpus does not
+              say).
+          This is the single most important gap relative to the question asked.
+          Confidence: N/A - this is an absence, not a finding.
+
+
+3.  Open Questions (corpus does not answer; NEW MINER RUN WARRANTED)
+
+    The two empty files ARE the open questions, restated as research targets:
+
+    Q1. SSA and variants (pruned/semi-pruned SSA, gated SSA, thinned-GVN-form):
+        what does phi-based single-definition form buy pflow's def-use and
+        reaching-defs, and what does SSA *destruction* cost when regenerating
+        readable source? -> would populate representation-taxonomy-research.miner.
+
+    Q2. RVSDG vs Sea-of-Nodes: both decouple a value/dependence graph from a
+        concrete control schedule and RE-SCHEDULE to emit code. Is "graph that is
+        analysis-friendly AND re-schedulable to clean source" a better serving
+        layer for pflow than CFG+PDG? This is the one IR family that directly
+        targets BOTH of pflow's analysis and regeneration jobs and the corpus has
+        nothing on it. -> representation-taxonomy + ir-to-clean-code.
+
+    Q3. CPS/ANF/SSA equivalence (the "SSA is functional programming" result):
+        relevant only if pflow ever adopts a functional IR; corpus silent.
+
+    Q4. e-graphs / equality saturation for rewrite-driven simplification (pick
+        the simplest equivalent program rather than greedily rewriting): could be
+        pflow's simplification engine, but no evidence exists here.
+
+    Q5. Decompiler-style structuring algorithms beyond essential complexity
+        (relooper, Lengauer-style structuring, goto-elimination) - the
+        ir-to-clean-code file names these but holds no records. Section 2.5 gives
+        the ev(G) measure but not the structuring ALGORITHM that produces clean
+        source from an irreducible CFG.
+
+    Suggested miner targets for a new run: "SSA construction and destruction for
+    readable code", "RVSDG demand/control normal form and code generation",
+    "Sea-of-Nodes scheduling / global code motion", "control-flow structuring /
+    relooper / goto elimination for decompilation", "equality saturation program
+    optimization (egg/egglog)".
+
+
+4.  Reading Trail (grounded portion only)
+
+    1.  pdg-slicing-research.miner:3  -  Weiser 1984. Start here: defines the
+        slice, the dataflow formulation, and WHY control dependence is mandatory.
+        The if/print(y) example is the clearest argument for PDG over CFG-only.
+    2.  pdg-slicing-research.miner:2  -  Ottenstein&Ottenstein 1984. The pivot:
+        slicing as O(V+E) graph reachability on the PDG. This is the core
+        "analysis IR" recommendation.
+    3.  pdg-slicing-research.miner:1  -  Ferrante-Ottenstein-Warren 1987. The full
+        PDG construction algorithm from CFG + post-dominator tree. This is the
+        recipe pflow would implement on top of its current IR.
+    4.  pdg-slicing-research.miner:4  -  Horwitz-Reps-Binkley 1990. Only if you
+        need interprocedural: the SDG, two-pass slicing, and the O(n^3) cost.
+    5.  flow-complexity-metrics.miner:2  -  Essential complexity. The regeneration
+        target metric (ev(G)=1) and what irreducibility means for clean source.
+    6.  slice-cohesion-refactoring.miner:49  -  pflow's own algorithm sketch: how
+        slices + SESE + cohesion combine into a decomposition recommendation.
+    7.  slice-cohesion-refactoring.miner:9  -  Tuck/Wedge/Split/Fold: the SESE
+        region as the unit of safe extraction (primary-source depth).
+    8.  flow-complexity-metrics.miner:29  -  The metric -> CFG-input -> signal
+        table. Confirms every analysis pflow wants is computable from the current
+        substrate + derived PDG.
+
+
+5.  RANKED RECOMMENDATION TABLE (IR level x job fit)
+
+    Tiers: BEST / GOOD / POSS = possible-no-evidence / GAP = no corpus evidence.
+    "Cost" = construction/lowering cost as the corpus reports it.
+
+    IR LEVEL            | ANALYSIS      | SIMPLIFY/      | REGEN TO       | CONSTRUCTION COST
+                        | (slice/metric)| DECOMPOSE      | CLEAN SOURCE   | (from corpus)
+    --------------------+---------------+----------------+----------------+-------------------
+    CFG + dominators    | GOOD - base   | GOOD - base    | GOOD - ev(G)   | pflow already has it;
+    + def-use           | for all; but  | (SESE regions, | structuring    | CPython itself uses
+    (CURRENT)           | slice = O(V^2 | essential cx)  | target ev=1    | BB-CFG [bytecode:7]
+                        | *N) iterative |[slice-coh:9,49]| [flow-cx:2,21] | [pdg:1; flow-cx:13,29]
+                        | [pdg:3]       |                |                |
+    --------------------+---------------+----------------+----------------+-------------------
+    PDG (control+data   | BEST - slice  | BEST - decomp  | (indirect: PDG | DERIVED from CFG+
+    dependence,         | = O(V+E)      | slices +       | feeds slice/   | post-doms+def-use;
+    intraprocedural)    | reachability; | pairwise       | SESE; corpus   | post-dom tree
+    RECOMMENDED layer   | both edge     | cohesion       | does not claim | O(N log N), ctrl-dep
+    ON TOP of current   | kinds correct | clustering     | PDG->source    | O(E*N) worst
+                        | [pdg:1,2,3]   |[slice-coh:18,49| directly)      | [pdg:1,2]
+                        |               | :27,:43]       |                |
+    --------------------+---------------+----------------+----------------+-------------------
+    SDG (interprocedural| BEST for      | enables cross- | not addressed  | O(n^3) summary-edge
+    PDG + summary edges)| whole-program | function       |                | preprocessing,
+    use ONLY if pflow   | slicing;      | extraction     |                | O(n^2)/query;
+    goes cross-function | needs 2-pass  | (corpus is     |                | calling-context
+                        | for context   | mostly intra-  |                | hazard to handle
+                        | [pdg:4]       | procedural)    |                | [pdg:4]
+    --------------------+---------------+----------------+----------------+-------------------
+    SSA (+ variants)    | POSS (classic | POSS           | POSS - SSA     | GAP - corpus silent
+                        | win for def-  |                | destruction is | on cost & fit
+                        | use/dataflow) |                | the regen risk |
+                        | GAP no evid.  | GAP            | GAP            | [empty files]
+    --------------------+---------------+----------------+----------------+-------------------
+    RVSDG               | GAP           | GAP            | POSS - designed| GAP - corpus silent
+    (the one IR that    |               |                | for BOTH       |
+    targets BOTH jobs)  | GAP no evid.  |                | analysis +     | [empty files]
+                        |               |                | re-codegen GAP |
+    --------------------+---------------+----------------+----------------+-------------------
+    Sea-of-Nodes        | GAP           | GAP            | POSS - re-     | GAP - corpus silent
+                        | GAP no evid.  |                | schedules to   |
+                        |               |                | emit; GAP      | [empty files]
+    --------------------+---------------+----------------+----------------+-------------------
+    CPS / ANF           | GAP           | GAP            | GAP            | GAP - corpus silent
+                        | (only rel. if functional IR adopted)            | [empty files]
+    --------------------+---------------+----------------+----------------+-------------------
+    e-graphs /          | n/a           | POSS - rewrite-| POSS           | GAP - corpus silent
+    equality saturation |               | based simplify | GAP            | [empty files]
+    --------------------+---------------+----------------+----------------+-------------------
+    Polyhedral model    | n/a (loop-    | POSS (loop     | POSS (poly     | GAP; likely out of
+                        | nests only)   | nests only)    | codegen)       | scope for general
+                        | GAP no evid.  | GAP            | GAP            | Python [empty files]
+
+    BOTTOM LINE (grounded): Keep the CFG+dominators+def-use substrate. ADD a
+    derived intraprocedural PDG as the serving/analysis layer - it is cheap
+    (linear slicing), it is the documented unit for both slicing and slice-based
+    decomposition, and it is a derivation of what pflow already computes, not a
+    new front end. Escalate to an SDG only if/when pflow needs interprocedural
+    slicing (accepting O(n^3) preprocessing). Use essential complexity ev(G) on
+    the CFG as the regeneration-quality target.
+
+    UNGROUNDED (needs new miner run): Whether SSA buys enough for def-use, and
+    especially whether RVSDG or Sea-of-Nodes - which natively serve BOTH analysis
+    AND re-schedulable clean codegen - would beat CFG+PDG as the serving IR, is
+    NOT answerable from this corpus.
+
+
+6.  CONFLICTS
+
+    No hard source-vs-source contradictions were found in the grounded material;
+    the PDG/slicing/cohesion literature is mutually citing and consistent. Two
+    TENSIONS worth the maintainer's attention (not contradictions):
+
+    6.1.  Slicing efficiency: Weiser's CFG-based iterative slice is O(V^2 * N)
+          [ref: pdg-slicing-research.miner:3] vs PDG reachability O(V+E)
+          [ref: pdg-slicing-research.miner:2]. Not a conflict - the second
+          supersedes the first - but it is the concrete reason to add the PDG
+          layer rather than slice on the raw CFG.
+
+    6.2.  Naming collision to avoid in any RFC: "SDG" means TWO different things
+          in this corpus. Horwitz-Reps-Binkley SDG = System Dependence Graph
+          (interprocedural). [ref: pdg-slicing-research.miner:4] Tiwari/Joshi SDG
+          = Structure Dependence Graph (method-local, for edge-contraction
+          extraction). [ref: slice-cohesion-refactoring.miner:43] The latter
+          record flags this collision itself.
+
+    The largest "conflict" is really the GAP: the question presupposes a
+    comparison (CFG vs SSA vs RVSDG vs Sea-of-Nodes vs ...) that the corpus can
+    only half-populate. That should be resolved by mining, not by inference.
+
+
+7.  CORPUS GAPS FOUND (summary for the maintainer)
+
+    EMPTY (0 records) - the two MOST on-topic files:
+      - representation-taxonomy-research.miner   (IR taxonomy: SSA/RVSDG/Sea-of-
+        Nodes/CPS-ANF/e-graphs/polyhedral) -> the entire "which IR LEVEL" axis.
+      - ir-to-clean-code-research.miner          (structuring/goto-elim/SSA-
+        destruction/RVSDG-Sea-of-Nodes-scheduling/polyhedral-codegen) -> the
+        entire "serve regeneration" axis beyond ev(G).
+      - clone-reuse-detection-research.miner     (0 records; off-topic for this
+        question but noted as another empty placeholder).
+
+    ZERO-HIT TOPICS across the 7 populated files (verified by mq grep):
+      SSA/phi, RVSDG, Sea-of-Nodes, CPS/ANF, e-graphs/equality-saturation,
+      polyhedral model, and any IR re-scheduling / SSA-destruction technique.
+
+    THIN coverage:
+      - pdg-slicing-research.miner has only 4 records (all HIGH and high-quality,
+        but the entire PDG/SDG primary-source base is just 4 records; corroborated
+        by duplicates in slice-cohesion-refactoring and flow-complexity).
+      - Regeneration is represented ONLY by essential-complexity structuring
+        (flow-cx:2, :21) plus the extraction-safety SESE notion (slice-coh:9).
+        There is no decompiler/structuring ALGORITHM record (relooper, etc.).
+
+    WELL COVERED (use with confidence):
+      CFG+dominators+def-use as substrate; PDG construction and slicing; SDG and
+      its cost; slice-based cohesion and function decomposition; essential
+      complexity; Python/CPython CFG specifics; flow-native detector requirements.

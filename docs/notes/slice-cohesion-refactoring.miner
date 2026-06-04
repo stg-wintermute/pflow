@@ -1,0 +1,2085 @@
+MINER_DUMP
+topic: Slice-Based Cohesion/Coupling Metrics and Slice-Based Refactoring/Function Decomposition
+depth: 2
+date: 2026-05-29
+status: COMPLETE
+record_count: 49
+<<<END>>>
+
+SOURCE
+id: 1
+ts: 2026-05-29T10:00:00Z
+relevance: HIGH
+title: Using Program Slicing in Software Maintenance
+authors: Keith B. Gallagher, James R. Lyle
+year: 1991
+venue: IEEE Transactions on Software Engineering, vol. 17, no. 8, pp. 751-761
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1109/32.83912
+keywords: decomposition slicing, software maintenance, independent computations, slice graph, safe extraction
+cites: Weiser 1984 (program slicing)
+cited_by: Bieman/Ott 1994, Tsantalis/Chatzigeorgiou 2011, Meyers/Binkley 2007
+content:
+  CORE CONCEPT: Extends Weiser's slicing criterion from <program_point, variable> pair to a
+  "decomposition slice" -- a slice capturing ALL computation on a given variable, independent
+  of any specific line number.
+  
+  DEFINITION: A decomposition slice D(P, v) for program P and variable v is the set of all
+  statements that affect the value of v at ANY point in P (not just at a specific point p).
+  This is equivalent to the union over all program points p of the backward slice S(P, <p, v>)
+  for those p where v is defined or used.
+  
+  SLICE LATTICE: The set of all single-variable decomposition slices for a program P, ordered
+  by set inclusion, forms a lattice. This lattice is used to define a "slice-based decomposition"
+  of the program.
+  
+  DECOMPOSITION: Two variables v1, v2 are INDEPENDENT if their decomposition slices are
+  disjoint: D(P, v1) ∩ D(P, v2) = ∅. Independent computations can be safely extracted into
+  separate functions.
+  
+  SLICE GRAPH: The decomposition slice graph has nodes = decomposition slices for each
+  output variable; edges = intersection relationships (non-empty intersection = dependence).
+  Components with no edges between them represent truly independent computations.
+  
+  SAFE EXTRACTION CONDITION: A subset S of statements can be safely extracted into a
+  separate function iff S = D(P, V') for some set of output variables V', and the remaining
+  statements in P \ S depend only on the interface defined by V'.
+  
+  PRACTICAL USE FOR MAINTENANCE: Given a proposed change to variable v, the change's
+  effects are confined to D(P, v). If D(P, v) is small relative to P, the change is low-risk.
+  If D(P, v) overlaps many other decomposition slices, the change affects many computations.
+  
+  APPLICATION TO SPLITTING: If a function F has output variables {o1, o2, o3} where
+  D(F, {o1}) and D(F, {o2, o3}) are disjoint, F can be split into F1 (computing o1) and
+  F2 (computing o2, o3) with no behavioral coupling between them.
+  
+  RELATED EARLIER WORK: "Using program decomposition to guide modifications" (Lyle & Gallagher,
+  Conf. Software Maintenance 1988). "A program decomposition scheme with applications"
+  (Gallagher & Lyle, HICSS 1989).
+  
+  DOI: 10.1109/TSE.1991.83912
+<<<END>>>
+
+SOURCE
+id: 2
+ts: 2026-05-29T10:01:00Z
+relevance: HIGH
+title: Measuring Functional Cohesion
+authors: James M. Bieman, Linda M. Ott
+year: 1994
+venue: IEEE Transactions on Software Engineering, vol. 20, no. 8, pp. 644-657, August 1994
+quality: PEER-REVIEWED
+url: https://www.cs.colostate.edu/~bieman/Pubs/tse94new.pdf
+keywords: SFC, WFC, adhesiveness, data tokens, glue tokens, superglue tokens, data slices, functional cohesion
+cites: Weiser 1984, Ott/Thuss 1989/1993
+cited_by: Meyers/Binkley 2007, Green et al. 2009, all subsequent slice-based cohesion work
+content:
+  KEY ABSTRACTION: Data slices (NOT full program slices). A DATA SLICE for output variable v
+  is the sequence of data tokens in the procedure that have a dependence relationship on v.
+  Specifically: a data token t is in the data slice for v iff t flows to v via def-use chains.
+  
+  DATA TOKEN: Any variable or constant occurrence in the procedure body.
+  
+  GLUE TOKEN: A data token that appears in MORE THAN ONE data slice (lies on ≥2 data slices).
+  Glue tokens bind separate computation strands together.
+  
+  SUPERGLUE TOKEN: A data token that appears in ALL data slices (lies on every data slice).
+  Superglue tokens are the core shared computation.
+  
+  ADHESIVENESS of token t: A(t) = (number of data slices containing t). For glue tokens,
+  A(t) ≥ 2; for superglue tokens, A(t) = k (total number of data slices).
+  
+  WEAK FUNCTIONAL COHESION (WFC):
+    WFC = |{glue tokens}| / |{all data tokens}|
+    = count of tokens on ≥2 data slices / total data token count
+    Range: [0, 1]. WFC=0 means no shared data between computations. WFC=1 means all tokens
+    are shared across all outputs (maximally cohesive).
+    INTERPRETATION: Low WFC → function computes several unrelated things → candidate for split.
+  
+  STRONG FUNCTIONAL COHESION (SFC):
+    SFC = |{superglue tokens}| / |{all data tokens}|
+    = count of tokens on ALL data slices / total data token count
+    Range: [0, 1]. SFC=0 means no common computation across all outputs. SFC=1 means all
+    tokens contribute to all outputs.
+    INTERPRETATION: SFC=0 with WFC>0 means function has shared pairs but no universal core.
+    SFC=0 means function likely has multiple independent responsibilities.
+  
+  ADHESIVENESS (A):
+    A = (sum over all glue tokens of A(t)) / (|data tokens| × |data slices|)
+    = sum_{t ∈ glue} A(t) / (|DT| × k)
+    where k = number of data slices, |DT| = total data tokens.
+    This is the ratio of actual adhesiveness to maximum possible adhesiveness.
+  
+  EXAMPLE (from thinkingintests.wordpress.com):
+    Program with 3 output variables → 3 data slices.
+    Total data tokens = 25. Glue token count = 12 (appear in 2 slices). Superglue = 6 (in all 3).
+    WDC = 12/25 = 0.48. SDC = 6/25 = 0.24.
+    DA = (12×2 + 6×3) / (25×3) = (24+18)/75 = 42/75 = 0.56.
+  
+  REFACTORING SIGNAL: Low WFC (few shared tokens) + low SFC (no universal core) =
+  function is performing unrelated computations → extract separate functions for each
+  non-overlapping data slice group.
+  
+  TOOL: Funco (Colorado State Univ.) -- C program analyzer implementing these metrics.
+  URL: https://www.cs.colostate.edu/~bieman/funco.html
+  DOI: 10.1109/32.310673
+<<<END>>>
+
+SOURCE
+id: 3
+ts: 2026-05-29T10:02:00Z
+relevance: HIGH
+title: Program Slices as an Abstraction for Cohesion Measurement
+authors: Linda M. Ott, James M. Bieman
+year: 1998
+venue: Information and Software Technology, vol. 40, no. 11-12, pp. 691-699
+quality: PEER-REVIEWED
+url: https://www.cs.colostate.edu/~bieman/Pubs/istPreprint98.pdf
+keywords: data slices, cohesion measurement, WFC, SFC, abstraction, procedural paradigm
+cites: Weiser 1984, Ott/Thuss 1989/1993, Bieman/Ott 1994
+content:
+  EXTENSION OF 1994 TSE PAPER: Demonstrates that program slices provide a paradigm-independent
+  abstraction for cohesion measurement. Previously cohesion was subjective; slices enable objective
+  measurement.
+  
+  KEY CLAIM: "Program slices provide an abstraction that can be used to define important software
+  attributes that can serve as a basis for measurement."
+  
+  SCOPE: Extends beyond procedural paradigm -- discusses applying slice-based cohesion to
+  object-oriented and other paradigms.
+  
+  DOI: 10.1016/S0950-5849(98)00092-5
+  Publisher: Elsevier Science B.V.
+<<<END>>>
+
+SOURCE
+id: 4
+ts: 2026-05-29T10:03:00Z
+relevance: HIGH
+title: The Relationship Between Slices and Module Cohesion
+authors: L. Ott, J. Thuss
+year: 1989
+venue: Proceedings of the 11th International Conference on Software Engineering (ICSE), pp. 198-204
+quality: PEER-REVIEWED
+url: https://www.semanticscholar.org/paper/The-Relationship-Between-Slices-And-Module-Cohesion-Ott-Thuss/dbfb779b61fd67294be00f25310cd83f1a326fc0
+keywords: metric slice, module cohesion, tightness, overlap, coverage, principal variables
+content:
+  METRIC SLICE DEFINITION: A metric slice MS(P, v) on variable v is:
+    MS(P, v) = BackwardSlice(P, <end_of_module, v>) ∪ ForwardSlice(P, d)
+    for every definition d of v that appears in the backward slice.
+  
+  This combines backward slice from end of module with forward slices from internal
+  definitions, giving a richer dependency set than pure backward slicing.
+  
+  OUTPUT VARIABLES: Variables modified within the module that are either (a) reference
+  parameters or (b) declared outside the module's scope. These are the slicing criteria.
+  
+  PRINCIPAL VARIABLES: The set of output variables; metric slices are computed for each.
+  
+  RELATIONSHIP TO COHESION: Large overlap between metric slices → high cohesion (shared
+  computation). Small/empty intersection → multiple independent tasks → low cohesion.
+  
+  NOTE: This 1989 paper introduced the metric slice concept; the 1993 paper at Metrics
+  Symposium formalized cohesion metrics built on top.
+<<<END>>>
+
+SOURCE
+id: 5
+ts: 2026-05-29T10:04:00Z
+relevance: HIGH
+title: Slice Based Metrics for Estimating Cohesion
+authors: L. Ott, J. Thuss
+year: 1993
+venue: Proceedings of the 1st International Software Metrics Symposium, pp. 71-81
+quality: PEER-REVIEWED
+url: https://www.semanticscholar.org/paper/The-Relationship-Between-Slices-And-Module-Cohesion-Ott-Thuss/dbfb779b61fd67294be00f25310cd83f1a326fc0
+keywords: tightness, min-coverage, max-coverage, overlap, parallelism, cohesion metrics
+content:
+  METRICS DEFINED (built on metric slices for principal variables {v1,...,vk}, module M):
+  
+  Let Si = metric_slice(M, vi), |Si| = size of slice i (in statements), |M| = module size.
+  Let S_all = S1 ∩ S2 ∩ ... ∩ Sk (intersection of ALL slices).
+  
+  TIGHTNESS: T(M) = |S_all| / |M|
+    = size of intersection of all slices / total module size
+    Range: [0, 1]. T=1 means entire module is shared by all outputs (maximally tight).
+    T=0 means no statement contributes to all outputs simultaneously.
+    High tightness → single-purpose function. Low tightness → multiple unrelated tasks.
+  
+  MIN-COVERAGE: MinCov(M) = min_i(|Si|) / |M|
+    = size of smallest slice / total module size
+    Characterizes the "thinnest" output computation.
+  
+  MAX-COVERAGE: MaxCov(M) = max_i(|Si|) / |M|
+    = size of largest slice / total module size
+  
+  COVERAGE: Cov(M) = (1/k) * sum_i(|Si|) / |M|
+    = average slice size / total module size (Weiser's metric, adopted here)
+    Range: [0, 1]. Coverage close to 1 means most of module participates in each output.
+  
+  OVERLAP: OL(M) = average over all pairs (i,j) of |Si ∩ Sj| / |Si ∪ Sj|
+    Or Weiser's definition: (1/k) * sum_i( |Si ∩ S_all| / |Si| )
+    Measures average pairwise sharing relative to union.
+  
+  PARALLELISM: PAR(M) = 1 - (1/k) * sum_i(|Si ∩ S_all| / |Si|)
+    = 1 - Tightness-normalized version
+    High parallelism → slices are mostly non-overlapping → independent computations.
+    
+  NOTE: Low Tightness + high Parallelism = strong signal to split function.
+  NOTE: Sources vary slightly on exact Overlap formula; see Green et al. 2009 for survey.
+<<<END>>>
+
+
+SOURCE
+id: 6
+ts: 2026-05-29T10:05:00Z
+relevance: HIGH
+title: Program Slicing (Weiser 1984) — metrics section
+authors: Mark D. Weiser
+year: 1984
+venue: IEEE Transactions on Software Engineering, vol. SE-10, no. 4, pp. 352-357, July 1984
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1109/TSE.1984.5010248
+keywords: program slicing, tightness, overlap, coverage, cohesion, slicing criterion
+content:
+  SLICING CRITERION: A pair <p, V> where p is a program point and V is a set of variables.
+  A slice S(P, <p,V>) is the set of all statements of P that might affect the values of V at p.
+  
+  COHESION METRICS (from Weiser's original paper, section on metrics):
+  
+  COVERAGE: ratio of average slice size to module length.
+    Cov(M) = (1/k) * sum_{i=1}^{k} |S_i| / |M|
+    where k = number of slices (one per output variable), |S_i| = size of slice i, |M| = module size.
+    High coverage → most statements in module contribute to most outputs → cohesive.
+  
+  TIGHTNESS: ratio of size of intersection of all slices to module length.
+    T(M) = |S_1 ∩ S_2 ∩ ... ∩ S_k| / |M|
+    High tightness → a large "core" shared by all outputs → single-minded module.
+    T=0 means no statement is shared by all outputs → no universal computation core.
+  
+  OVERLAP: average fraction of each slice that is shared with all other slices.
+    OL(M) = (1/k) * sum_{i=1}^{k} |S_i ∩ S_all| / |S_i|
+    where S_all = intersection of all slices.
+    High overlap → each slice shares most of its content with the universal core.
+  
+  KEY INSIGHT from Longworth (cited in subsequent literature): Coverage, a modified Overlap,
+  and Tightness can differentiate high from low cohesion. Tightness favors "single thought"
+  modules. Coverage tolerates large slices without requiring them to overlap.
+  
+  NOTE: Weiser proposed these metrics but did not identify specific software quality attributes
+  they measure. Ott/Thuss (1989, 1993) and Bieman/Ott (1994) grounded them in cohesion theory.
+  
+  DOI: 10.1109/TSE.1984.5010248
+<<<END>>>
+
+SOURCE
+id: 7
+ts: 2026-05-29T10:06:00Z
+relevance: HIGH
+title: Precise Interprocedural Chopping
+authors: Thomas Reps, Genevieve Rosay
+year: 1995
+venue: Proceedings of the 3rd ACM SIGSOFT Symposium on Foundations of Software Engineering (FSE-3), pp. 41-49
+quality: PEER-REVIEWED
+url: https://research.cs.wisc.edu/wpis/papers/fse95b.pdf
+keywords: program chopping, chop, source, target, interprocedural, context-sensitive, PDG, SDG
+cites: Jackson/Rollins 1994 (first chopping paper), Horwitz/Reps/Binkley 1990 (SDG)
+cited_by: Krinke 2004 (barrier chopping), Giffhorn 2011 (advanced chopping)
+content:
+  CHOPPING DEFINITION: A chop C(s, t) from source criterion s to target criterion t
+  consists of all nodes n in the SDG such that there exists an interprocedurally realizable
+  path from s to n AND from n to t. More precisely:
+    chop(s, t) = { v | ∃ realizable path s →* v →* t in SDG }
+  
+  INTUITION: "What program elements v serve to transmit effects from source s to target t?"
+  Equivalently: "What flows from s to t?" or "What computation mediates s's effect on t?"
+  
+  RELATION TO SLICING:
+    backward_slice(t) = chop(entire_program, t)
+    forward_slice(s) = chop(s, entire_program)
+    chop(s, t) ⊆ backward_slice(t) ∩ forward_slice(s)
+    [Chop is STRICTLY SMALLER than the intersection -- more precise!]
+  
+  CONTEXT-SENSITIVITY: Reps/Rosay were FIRST to give context-sensitive interprocedural
+  chopping, distinguishing different call sites' contexts. Jackson/Rollins 1994 had defined
+  chopping but only intraprocedurally (same procedure restriction).
+  
+  ALGORITHM: Two-phase algorithm on SDG:
+    Phase 1: Forward reachability from s (context-sensitive, respecting call/return edges)
+    Phase 2: Backward reachability from t (context-sensitive), intersected with Phase 1 result.
+  COMPLEXITY: O(E² × N) where E = SDG edges, N = SDG nodes.
+  
+  REFACTORING USE: chop(s, t) answers "what part of this function is about computing t from s?"
+  For pflow: given a data source (e.g., an input parameter read) and a sink (e.g., return or
+  output variable), the chop identifies exactly which statements belong to that computation.
+  Statements NOT in any meaningful chop are dead code or uncoupled utility code.
+  
+  MULTI-CHOP for function splitting: Compute chop(inputs, o1) and chop(inputs, o2). If
+  these are disjoint, the function can be cleanly split at the boundary between them.
+<<<END>>>
+
+SOURCE
+id: 8
+ts: 2026-05-29T10:07:00Z
+relevance: HIGH
+title: Chopping: A Generalization of Slicing
+authors: Daniel Jackson, Eugene J. Rollins
+year: 1994
+venue: CMU-CS-94-169, Technical Report, Carnegie Mellon University, School of Computer Science, July 1994
+quality: INDUSTRY
+url: https://apps.dtic.mil/sti/tr/pdf/ADA282683.pdf
+keywords: program chopping, generalization of slicing, source set, sink set, PDG, forward slice, backward slice
+content:
+  ORIGINAL CHOPPING PAPER (intraprocedural version).
+  
+  DEFINITION: Given source set SRC and sink set SNK (sets of variable instances at program points),
+  a chop is the graph of statements transmitting effects from SRC to SNK.
+    chop(SRC, SNK) = forward_slice(SRC) ∩ backward_slice(SNK)
+  
+  GENERALIZATION: Chopping subsumes slicing as special cases:
+    backward_slice(snk) = chop(∅ with all program inputs as source, snk)
+    forward_slice(src) = chop(src, ∅ with all outputs as sink)
+  
+  LIMITATION: Jackson/Rollins restricted source and target to same procedure. Reps/Rosay 1995
+  extended to full interprocedural chopping.
+  
+  ALTERNATIVE CHOP DEFINITION from Reps/Rosay: chop(s,t) is NOT simply intersection of forward
+  and backward slices when context-sensitivity matters. The intersection gives an overapproximation;
+  context-sensitive chopping is more precise.
+<<<END>>>
+
+SOURCE
+id: 9
+ts: 2026-05-29T10:08:00Z
+relevance: HIGH
+title: Restructuring Programs by Tucking Statements into Functions
+authors: Arun Lakhotia, Jean-Christophe Deprez
+year: 1998
+venue: Information and Software Technology, vol. 40, no. 11-12, pp. 677-689
+quality: PEER-REVIEWED
+url: https://www.sciencedirect.com/science/article/abs/pii/S0950584998000913
+keywords: Tuck, Wedge, Split, Fold, extract function, refactoring, slice-based, SESE region
+cites: Gallagher/Lyle 1991, Weiser 1984
+cited_by: Tsantalis/Chatzigeorgiou 2009/2011, Maruyama 2001, SBSRE 2023
+content:
+  THE TUCK TRANSFORMATION: A three-step program transformation to extract a function from
+  a larger one. Consists of Wedge + Split + Fold.
+  
+  STEP 1 - WEDGE:
+    Given a set of "seed statements" (statements the developer wants to extract), the Wedge
+    operation finds the smallest single-entry, single-exit (SESE) region that contains all
+    seed statements AND all statements that the seed statements depend on (the "slice" of
+    the seed statements within the function). This SESE region is the unit of extraction.
+    
+    Formally: Wedge(F, seed) = the slice S ⊆ F such that:
+      - seed ⊆ S
+      - S is a SESE region (single control-flow entry, single control-flow exit)
+      - S is minimal (smallest SESE containing seed's full dependency closure)
+    
+    The SESE constraint ensures extractability -- arbitrary subsets of statements cannot
+    be extracted because they may not form valid control flow.
+  
+  STEP 2 - SPLIT:
+    Partition the statements in the Wedge into "meaningful function" -- separate computations.
+    This is driven by decomposition slicing: compute decomposition slices of outputs within
+    the Wedge and identify independent sub-computations.
+  
+  STEP 3 - FOLD:
+    The split sub-computation is extracted into a new function. A call to the new function
+    replaces the original statements in F. The interface (parameters, return values) is
+    determined by the data flow crossing the extraction boundary.
+  
+  SAFETY: Safe if the extracted statements form a closed SESE region and the interface
+  correctly captures all data flowing in/out of the extracted region.
+  
+  KEY INSIGHT: The Wedge step uses program slicing to grow the seed into a minimal complete
+  computation. The Split step uses decomposition slicing to find sub-computations within the
+  Wedge. Fold replaces the statements with a call.
+  
+  DOI: 10.1016/S0950-5849(98)00091-3
+<<<END>>>
+
+
+SOURCE
+id: 10
+ts: 2026-05-29T10:10:00Z
+relevance: HIGH
+title: An Empirical Study of Slice-Based Cohesion and Coupling Metrics
+authors: T. Meyers, D. W. Binkley
+year: 2007
+venue: ACM Transactions on Software Engineering and Methodology (TOSEM), vol. 17, no. 1, pp. 1:1-1:36, December 2007
+quality: PEER-REVIEWED
+url: https://www.cs.loyola.edu/~binkley/papers/tosem07-slice-metrics.pdf
+keywords: cohesion metrics, coupling metrics, SFC, WFC, inflow, outflow, empirical study, slice-based
+cites: Bieman/Ott 1994, Ott/Thuss 1989/1993, Weiser 1984, Harman et al. 1997
+content:
+  SCOPE: First large-scale empirical study comparing all major slice-based cohesion AND coupling
+  metrics across real C programs.
+  
+  COHESION METRICS STUDIED:
+    - Tightness (T): |S_all| / |M|  (Weiser 1984)
+    - Coverage (Cov): avg(|S_i|) / |M|  (Weiser 1984)
+    - Overlap (OL): avg over pairs of Jaccard similarity  (Weiser 1984)
+    - WFC: glue_tokens / total_data_tokens  (Bieman/Ott 1994)
+    - SFC: superglue_tokens / total_data_tokens  (Bieman/Ott 1994)
+    - Adhesiveness (A): sum(A(t)) / (|DT| × k)  (Bieman/Ott 1994)
+    - MinCoverage, MaxCoverage  (Ott/Thuss 1993)
+  
+  COUPLING METRICS STUDIED (based on Harman et al. 1997 framework):
+    INFLOW into function f: The set of definitions OUTSIDE f that appear in the backward slice
+    taken with respect to the principal variables of f. Captures how much f depends on external data.
+    
+    OUTFLOW from function f: The set of components OUTSIDE f that have f's principal variables
+    in their backward slice. Captures how much external code depends on f's outputs.
+    
+    COUPLING(f) = weighted average of f's coupling to all other functions.
+    Meyers/Binkley extended Harman et al.'s 1997 two-example paper to a full empirical study.
+  
+  EMPIRICAL FINDINGS:
+    - Metrics can identify deteriorating software quality as programs age (change over versions).
+    - Inter-metric correlations are high within cohesion group but coupling metrics provide
+      distinct viewpoint from cohesion metrics.
+    - SFC and Tightness provide similar signals for single-responsibility assessment.
+    - No empirical work on slice-based coupling had been done before this paper since Harman 1997.
+    - Baseline measures established: typical C function has Tightness ~0.2-0.4, Coverage ~0.5-0.7.
+  
+  DOI: 10.1145/1314493.1314495
+<<<END>>>
+
+SOURCE
+id: 11
+ts: 2026-05-29T10:11:00Z
+relevance: HIGH
+title: Slice-Based Measurement of Coupling
+authors: Mark Harman, M. Okunlawon, Y. Sivagurunathan, S. Danicic
+year: 1997
+venue: Proceedings of the IEEE/ACM ICSE Workshop on Process Modelling and Empirical Studies of Software Evolution, Boston, MA, pp. 28-32
+quality: WORKSHOP
+url: https://kclpure.kcl.ac.uk/portal/en/publications/slice-based-measurement-of-coupling/
+keywords: slice-based coupling, inflow, outflow, principal variables, procedure coupling
+content:
+  FIRST PAPER applying program slicing to coupling measurement.
+  Position paper with two small examples; no empirical validation.
+  
+  FRAMEWORK:
+    Given function f with principal variables {v1,...,vk} (output variables):
+    
+    INFLOW(f) = definitions of variables OUTSIDE f that appear in
+      backward_slice(f, <end_of_f, vi>) for any vi.
+    Captures: "what external data does f depend on beyond its direct parameters?"
+    
+    OUTFLOW(f) = functions/components g OUTSIDE f such that
+      any principal variable vi of f appears in backward_slice(g, <end_of_g, vj>)
+      for some output variable vj of g.
+    Captures: "what external code depends on f's outputs (beyond direct return value)?"
+    
+    COUPLING(f) = some combination of inflow + outflow sizes (weighted).
+    
+  EXTENDED by: Meyers/Binkley TOSEM 2007 (defined coupling(f) as weighted average across
+  all other functions), who provided the first empirical study.
+<<<END>>>
+
+SOURCE
+id: 12
+ts: 2026-05-29T10:12:00Z
+relevance: HIGH
+title: Dependence Clusters in Source Code
+authors: Mark Harman, David Binkley, Keith Gallagher, Nicolas Gold, Jens Krinke
+year: 2009
+venue: ACM Transactions on Programming Languages and Systems (TOPLAS), vol. 32, no. 1, November 2009
+quality: PEER-REVIEWED
+url: https://dl.acm.org/citation.cfm?id=1596528
+keywords: dependence cluster, monotone slice-size graph, MSG, complexity, refactoring difficulty, mutually inter-dependent
+cites: Binkley/Harman 2005 (locating clusters), earlier Harman et al. work on slicing
+content:
+  DEFINITION: A dependence cluster is a set of program statements S such that every statement
+  in S is mutually inter-dependent with every other statement in S. Formally:
+    For all s1, s2 ∈ S: s1 ∈ backward_slice(s2) AND s2 ∈ backward_slice(s1).
+  
+  Equivalently: S is a dependence cluster iff all pairwise backward slices within S are identical
+  (when restricted to S). Every statement depends on every other statement.
+  
+  MONOTONE SLICE-SIZE GRAPH (MSG): A visualization tool for dependence clusters.
+    X-axis: each program statement (ordered by increasing backward slice size)
+    Y-axis: backward slice size as % of total program
+    CLUSTER SIGNATURE: A dependence cluster appears as a "plateau" -- many consecutive statements
+    with identical slice size (the whole cluster has the same slice, since all are inter-dependent).
+    Preceded by a "cliff face" (sudden jump in slice size when entering the cluster).
+  
+  B-MSG: MSG based on backward slice sizes.
+  F-MSG: MSG based on forward slice sizes.
+  
+  ALGORITHM FOR FINDING CLUSTERS:
+    Naive: compute all pairwise backward slices (O(n²) slices).
+    Efficient approximation: compare slice SIZES (same-size heuristic).
+    Approximation precision: ≥97.76% across studied programs.
+  
+  EMPIRICAL RESULTS (large-scale C program study):
+    - Dependence clusters are "ubiquitous" in real programs.
+    - Many programs have clusters containing 30-70% of their statements.
+    - Global variables are the primary cause of large dependence clusters.
+    - Programs with large clusters are structurally difficult to refactor/test/maintain.
+  
+  REFACTORING IMPLICATION: A function containing a large dependence cluster CANNOT be
+  easily split -- all statements in the cluster are mutually entangled. To split, the
+  cluster root cause (usually global variables/shared state) must first be eliminated.
+  Identifying cluster boundaries tells developers WHERE refactoring is blocked.
+  
+  FOR pflow: Compute backward slices for each statement in function. Find statements with
+  identical slice sets (or same-size approximation). These form the irreducible core.
+  Statements outside the core are candidates for extraction.
+  
+  DOI: 10.1145/1596524.1596528
+<<<END>>>
+
+SOURCE
+id: 13
+ts: 2026-05-29T10:13:00Z
+relevance: HIGH
+title: Locating Dependence Clusters and Dependence Pollution
+authors: David Binkley, Mark Harman
+year: 2005
+venue: Proceedings of the 21st IEEE International Conference on Software Maintenance (ICSM 2005)
+quality: PEER-REVIEWED
+url: https://www.researchgate.net/publication/4175874_Locating_dependence_clusters_and_dependence_pollution
+keywords: dependence cluster, dependence pollution, global variables, MSG, locating clusters
+content:
+  PRECURSOR to the TOPLAS 2009 paper (Harman et al. 2009).
+  
+  DEPENDENCE POLLUTION: The phenomenon where global variables cause many unrelated
+  program elements to be included in each other's slices, creating artificially large
+  dependence clusters. A polluting variable v causes large clusters because many
+  functions both read and write v, creating spurious mutual dependencies.
+  
+  LOCATING CLUSTERS: Algorithm to find dependence clusters using the MSG.
+  Key observation: In an MSG, a plateau (flat section) = a dependence cluster.
+  The plateau height gives the cluster size. The cliff face before the plateau marks
+  the entry boundary into the cluster.
+  
+  RELATED: Identifying "linchpin vertices" -- the specific variable/statement whose
+  removal would break up a large cluster. Linchpins are the primary refactoring targets.
+<<<END>>>
+
+SOURCE
+id: 14
+ts: 2026-05-29T10:14:00Z
+relevance: HIGH
+title: Coherent Dependence Clusters
+authors: Syed Islam, Jens Krinke, David Binkley, Mark Harman
+year: 2010
+venue: Proceedings of the 9th ACM SIGPLAN-SIGSOFT Workshop on Program Analysis for Software Tools and Engineering (PASTE 2010)
+quality: WORKSHOP
+url: http://www0.cs.ucl.ac.uk/staff/M.Harman/paste10.pdf
+keywords: coherent cluster, same-slice cluster, SCG, slice-cluster graph, backward and forward slices
+content:
+  COHERENT DEPENDENCE CLUSTER DEFINITION:
+  A coherent dependence cluster is a set S of statements where ALL statements in S
+  have BOTH the same backward slice AND the same forward slice.
+  
+  Formally: S is coherent iff ∀ s1, s2 ∈ S:
+    backward_slice(s1) = backward_slice(s2)  AND
+    forward_slice(s1) = forward_slice(s2)
+  
+  DIFFERENCE from basic dependence cluster: Basic clusters require mutual backward dependency.
+  Coherent clusters additionally require identical forward effects (same impact on the rest).
+  Coherent clusters are STRONGER (more tightly constrained) than basic dependence clusters.
+  
+  SLICE/CLUSTER-SIZE GRAPH (SCG): A visualization showing three landscapes:
+    1. Increasing slice sizes (solid black line)
+    2. Corresponding same-slice cluster sizes (light gray line)  
+    3. Corresponding coherent-slice cluster sizes (dashed red line)
+  
+  EMPIRICAL RESULTS (30 programs):
+    - 23 of 30 programs have coherent clusters containing ≥10% of program statements.
+    - Despite tighter constraints, coherent clusters are abundant in practice.
+    - Approximation (same-size-slice instead of same-slice) has minimum precision of 97.76%.
+  
+  IMPLICATION FOR REFACTORING: Coherent clusters identify code that is so tightly coupled
+  it has identical data-flow context from multiple different perspectives. These are the
+  hardest regions to decompose -- they represent a "single atomic computation" even if
+  superficially complex.
+<<<END>>>
+
+
+SOURCE
+id: 15
+ts: 2026-05-29T10:20:00Z
+relevance: HIGH
+title: Identification of Extract Method Refactoring Opportunities for the Decomposition of Methods
+authors: Nikolaos Tsantalis, Alexander Chatzigeorgiou
+year: 2011
+venue: Journal of Systems and Software, vol. 84, no. 10, pp. 1757-1782, October 2011
+quality: PEER-REVIEWED
+url: https://www.sciencedirect.com/science/article/abs/pii/S0164121211001191
+keywords: complete computation slice, object state slice, PDG, extract method, behavior preservation, cohesion
+cites: Maruyama 2001, Lakhotia/Deprez 1998, Gallagher/Lyle 1991
+cited_by: SBSRE 2023, multiple subsequent automated refactoring papers
+content:
+  CORE CONTRIBUTION: Algorithm for AUTOMATICALLY identifying all possible Extract Method
+  refactoring opportunities in a Java method using PDG-based slicing.
+  
+  COMPLETE COMPUTATION SLICE (Definition 3.3.1 in paper):
+    A slice CS(M, v) for variable v is a "complete computation slice" iff it contains:
+    - All statements that contribute to the FINAL value of v (backward slice from last use/def)
+    - AND the slice forms a self-contained computational unit that can be extracted
+    
+    Implemented via full PDG backward reachability from the last def/use of v within method M.
+  
+  OBJECT STATE SLICE:
+    Additional slice type capturing statements that modify the state of a given object o.
+    Includes all method calls on o and assignments to o's fields within M.
+    Needed for object-oriented programs where state mutation creates implicit dependencies.
+  
+  PDG CONSTRUCTION (Section 3.1):
+    - Nodes: assignment statements and control predicates
+    - Edges: flow dependence (def→use) + control dependence (predicate→governed stmt)
+    - Object state treated as additional implicit output
+  
+  BEHAVIOR PRESERVATION RULES (Section 3.4) -- extraction is UNSAFE if:
+    1. Duplication of statements affecting object state would be required
+    2. Duplication of class instance creation statements required
+    3. Existing anti-dependences (write-after-read) would be violated
+    4. Existing output-dependences (write-after-write) would be violated
+    5. Extracted method would have no useful functionality (trivial)
+  
+  BLOCK-BASED SLICING: Extension where slices are restricted to "block-based regions" --
+  consecutive basic-block sequences. Prevents non-contiguous extractions that would be
+  confusing to developers.
+  
+  EARLIER RELATED PAPER: Tsantalis/Chatzigeorgiou, "Identification of Extract Method
+  Refactoring Opportunities," CSMR 2009, Kaiserslautern. This 2009 paper introduced the
+  approach; JSS 2011 extended it with additional behavior preservation rules.
+  
+  TOOL: JDeodorant (Eclipse plugin for Java, MIT license)
+  GitHub: https://github.com/tsantalis/JDeodorant
+  Last activity: v5.0.85, January 5, 2025.
+  
+  EMPIRICAL RESULTS: Tested on open-source Java projects. Compared against independent human
+  evaluators' Extract Method recommendations. Precision and recall measured.
+  
+  COHESION IMPACT: Evaluated using slice-based cohesion metrics (tightness, coverage);
+  extracted methods show improved cohesion vs. original method.
+  
+  DOI: 10.1016/j.jss.2011.05.016
+<<<END>>>
+
+SOURCE
+id: 16
+ts: 2026-05-29T10:21:00Z
+relevance: HIGH
+title: Supporting Single Responsibility Through Automated Extract Method Refactoring (SBSRE)
+authors: Alireza Ardalani, Mohsen Rezaei Shirsavar, Mohammad Reza Keyvanpour, Mohamad Ali Nematbakhsh
+year: 2023
+venue: Empirical Software Engineering (Springer), published 2023; also arXiv:2305.03428
+quality: PEER-REVIEWED
+url: https://arxiv.org/abs/2305.03428
+keywords: output-based slicing, single responsibility principle, SBSRE, extract method, SRP violations
+cites: Tsantalis/Chatzigeorgiou 2011, Maruyama 2001, JDeodorant
+content:
+  KEY INNOVATION: Output-based slicing (vs. complete computation slice of Tsantalis/Chatzigeorgiou).
+  
+  OUTPUT-BASED SLICE DEFINITION:
+    An output-based slice OBS(M, o) focuses on variables used in OUTPUT INSTRUCTIONS -- i.e.,
+    variables that appear in return statements, assignments to global variables, or reference
+    parameter modifications. This captures "what responsibility does M discharge via output o?"
+    
+    DIFFERENCE from Tsantalis: Complete computation slice uses final def/use of any local variable.
+    Output-based slice focuses specifically on outputs exposed to callers, aligning with SRP.
+  
+  ALGORITHM:
+    1. Identify output instructions O = {return, global writes, ref-param writes} in method M
+    2. For each output instruction oi ∈ O: compute OBS(M, oi) via backward PDG slicing
+    3. If OBS(M, oi) ∩ OBS(M, oj) = ∅ for i≠j: two output instructions have no shared data flow
+       → they implement INDEPENDENT responsibilities → Extract Method opportunity
+    4. Apply behavior preservation rules before proposing extraction
+  
+  BEHAVIOR PRESERVATION: Inherited from Tsantalis/Chatzigeorgiou plus additional rules specific
+  to output-based extraction.
+  
+  EMPIRICAL RESULTS:
+    - 29.6% improvement in precision vs. state-of-the-art (JDeodorant-based)
+    - 12.1% improvement in recall
+    - 20% average improvement in method-level cohesion metrics after refactoring
+  
+  TOOL: SBSRE -- Eclipse plugin for Java
+  GitHub: https://github.com/Alireza-Ardalani/SBSRE (MIT license, Java 100%)
+  
+  SLICE-BASED COHESION METRICS USED FOR EVALUATION:
+    WFC and SFC (Bieman/Ott 1994) measured before and after refactoring.
+  
+  DOI: 10.1007/s10664-023-10427-3
+<<<END>>>
+
+SOURCE
+id: 17
+ts: 2026-05-29T10:22:00Z
+relevance: HIGH
+title: Automated Method-Extraction Refactoring by Using Block-Based Slicing
+authors: Katsuhisa Maruyama
+year: 2001
+venue: Proceedings of the 2001 Symposium on Software Reusability, pp. 31-40
+quality: PEER-REVIEWED
+url: https://www.researchgate.net/publication/221563951_Automated_method-extraction_refactoring_by_using_block-based_slicing
+keywords: block-based slicing, extract method, backward slicing, basic block, method extraction, Java
+cites: Lakhotia/Deprez 1998, Gallagher/Lyle 1991
+content:
+  FIRST automated extract-method refactoring system using slicing (for Java).
+  
+  APPROACH:
+    1. Developer specifies TARGET VARIABLE of interest
+    2. Tool computes STATIC BACKWARD SLICE of target variable within method
+    3. Slice is restricted to a BLOCK-BASED REGION (consecutive basic blocks)
+    4. The region is extracted as a new method
+  
+  BLOCK-BASED REGION: A maximal sequence of consecutive basic blocks (contiguous control flow)
+  that contains the backward slice. Prevents non-contiguous extractions.
+  
+  KEY LIMITATION (noted in Tsantalis 2011): Requires developer to specify target variable.
+  Tsantalis/Chatzigeorgiou 2011 generalized this to automatic enumeration of ALL possible
+  complete computation slices.
+  
+  CONTRIBUTION: Simplified Larsen/Harrold 1996 interprocedural slicing algorithm to intraprocedural,
+  then introduced block-based regions for practical method extraction.
+<<<END>>>
+
+SOURCE
+id: 18
+ts: 2026-05-29T10:23:00Z
+relevance: HIGH
+title: Restructuring Functions with Low Cohesion
+authors: N. Gold, M. Harman (and possibly others)
+year: 1999
+venue: Proceedings of the 6th Working Conference on Reverse Engineering (WCRE 1999), IEEE
+quality: PEER-REVIEWED
+url: https://ieeexplore.ieee.org/document/806945
+keywords: function restructuring, pairwise cohesion, output variable partitioning, slice-based, object-oriented reengineering
+cites: Bieman/Ott 1994, Ott/Thuss 1993, Gallagher/Lyle 1991
+content:
+  CORE ALGORITHM for splitting a low-cohesion function F:
+  
+  STEP 1 - COMPUTE PAIRWISE COHESION:
+    For each pair of output variables (oi, oj) of F, compute their pairwise cohesion.
+    Pairwise cohesion C(oi, oj) measures how much of the slice for oi overlaps with the
+    slice for oj:
+    C(oi, oj) = |S(oi) ∩ S(oj)| / |S(oi) ∪ S(oj)|  (Jaccard similarity of slices)
+    
+  STEP 2 - PARTITION OUTPUT VARIABLES:
+    Use the pairwise cohesion values to cluster/partition the output variables into groups
+    {G1, G2, ..., Gm} where variables within a group have high cohesion and variables
+    across groups have low cohesion.
+    
+  STEP 3 - EXTRACT FUNCTIONS:
+    For each group Gk, use program slicing to identify the statements performing computations
+    for Gk: S(Gk) = ∪_{oi ∈ Gk} S(F, oi).
+    Create a new function Fk containing S(Gk).
+    
+  RESULT: F is replaced by calls to F1, F2, ..., Fm.
+  Each Fi has higher cohesion than original F.
+  
+  MOTIVATION: Re-architecting legacy procedural systems into OO architecture.
+  High-cohesion functions → better candidates for becoming methods of specific classes.
+<<<END>>>
+
+SOURCE
+id: 19
+ts: 2026-05-29T10:24:00Z
+relevance: HIGH
+title: Interprocedural Slicing Using Dependence Graphs
+authors: Susan Horwitz, Thomas Reps, David Binkley
+year: 1990
+venue: ACM Transactions on Programming Languages and Systems (TOPLAS), vol. 12, no. 1, pp. 26-60, January 1990
+quality: PEER-REVIEWED
+url: https://www.csa.iisc.ac.in/~raghavan/CleanedPav2011/horwitz-sdg-slicing-1990.pdf
+keywords: SDG, system dependence graph, interprocedural slicing, PDG, summary edges, calling context
+cites: Weiser 1984, Ferrante/Ottenstein/Warren 1987
+cited_by: All subsequent interprocedural slicing work; Reps/Rosay 1995 (chopping)
+content:
+  PROGRAM DEPENDENCE GRAPH (PDG) for single-procedure programs:
+    Vertices: entry vertex + assignment statements + control predicates + initial defs + final uses
+    Edges:
+      - CONTROL DEPENDENCE EDGE: v1 →c v2 (labeled true/false)
+        v1 is entry or predicate; v2 will execute whenever v1's condition matches edge label.
+      - FLOW DEPENDENCE EDGE: v1 →f v2
+        v1 defines variable x, v2 uses x, no intervening redefinition on some path.
+        Subtypes: loop-carried (v1 →lc(L) v2) vs loop-independent (v1 →li v2)
+      - DEF-ORDER DEPENDENCE EDGE: v1 →d v2
+        Both v1 and v2 define x, v1 precedes v2 in some execution but there's no use of x
+        between them on that path (matters for determining which definition reaches uses).
+    
+    INTRAPROCEDURAL SLICE: Reachability in PDG backward from target vertex.
+    Linear time algorithm (O(V+E)).
+  
+  SYSTEM DEPENDENCE GRAPH (SDG) for interprocedural programs:
+    = collection of PDGs (one per procedure) connected by:
+    - CALL EDGES: call_vertex →call callee_entry
+    - PARAMETER-IN EDGES: actual_in →pi formal_in (at call sites)
+    - PARAMETER-OUT EDGES: formal_out →po actual_out (at return)
+    - SUMMARY EDGES: actual_in →sum actual_out
+      A summary edge represents the TRANSITIVE effect of a procedure call: if formal_in can
+      affect formal_out, then actual_in transitively affects actual_out via the call.
+      Summary edges are precomputed to enable context-sensitive slicing.
+  
+  TWO-PASS ALGORITHM for interprocedural slicing:
+    Pass 1 (ascending): Start from target, traverse backward. When reaching a FORMAL_OUT node,
+      cross into caller's actual_out via PARAMETER-OUT edge. Then traverse CALL edges and
+      PARAMETER-IN edges (going UP call graph). Also follow SUMMARY edges.
+      Do NOT cross call edges from callee to caller via call edges in this pass.
+    Pass 2 (descending): From criteria accumulated in Pass 1, traverse within each procedure
+      using only intra-procedural edges (flow, control, def-order). Cross CALL edges going DOWN.
+    
+    CORRECTNESS: Two-pass correctly handles calling context by not mixing contexts from
+    different call sites (Weiser's algorithm failed here).
+    
+  COMPLEXITY: O(E³) construction of summary edges; O(E) slicing given summary edges.
+  
+  COMMERCIAL TOOL: CodeSurfer (GrammaTech) implements this algorithm.
+  PATENT: SDGs covered by U.S. patent (Wisconsin Alumni Research Foundation).
+  
+  Earlier version: PLDI 1988 proceedings. Journal version in TOPLAS 1990.
+  DOI: 10.1145/140731.140733
+<<<END>>>
+
+SOURCE
+id: 20
+ts: 2026-05-29T10:25:00Z
+relevance: HIGH
+title: The Program Dependence Graph and Its Use in Optimization
+authors: Jeanne Ferrante, Karl J. Ottenstein, Joe D. Warren
+year: 1987
+venue: ACM Transactions on Programming Languages and Systems (TOPLAS), vol. 9, no. 3, pp. 319-349, July 1987
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1145/24039.24041
+keywords: PDG, program dependence graph, control dependence, data dependence, optimization
+cited_by: Horwitz/Reps/Binkley 1990, all PDG-based slicing work
+content:
+  FOUNDATIONAL PDG DEFINITION:
+  
+  CONTROL DEPENDENCE: Statement Y is control-dependent on statement X iff:
+    1. X has at least two successors in the CFG
+    2. There exists a path from X to Y in the CFG on which X's next control decision leads
+       to eventual execution of Y
+    3. BUT there also exists a path from X that bypasses Y (Y is not guaranteed to execute)
+    
+    Formally using post-dominance: Y is control-dependent on X iff:
+    - Y post-dominates some successor of X in CFG
+    - Y does NOT post-dominate X itself
+    
+  DATA DEPENDENCE EDGE (flow/anti/output):
+    - Flow: def v → use v (a value is computed and used)
+    - Anti: use v → def v (a value is used before being redefined)
+    - Output: def v → def v (two definitions of same variable)
+  
+  PDG CONSTRUCTION: Build CFG → compute dominators/post-dominators → derive control deps →
+  compute reaching defs → add data dep edges.
+  
+  SLICING ON PDG (Ottenstein/Ottenstein 1984 observation): 
+    backward_slice(v) = backward reachability from v in PDG.
+    Linear time: O(V+E) per slice.
+  
+  DOI: 10.1145/24039.24041
+<<<END>>>
+
+
+SOURCE
+id: 21
+ts: 2026-05-29T10:26:00Z
+relevance: HIGH
+title: Fine Slicing: Theory and Applications for Computation Extraction
+authors: Aharon Abadi, Ran Ettinger, Yishai A. Feldman
+year: 2012
+venue: Fundamental Approaches to Software Engineering (FASE 2012), Lecture Notes in Computer Science, vol. 7212, Springer
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1007/978-3-642-28872-2_32
+keywords: fine slicing, cut points, computation extraction, loop untangling, executable slice, co-slice
+content:
+  CORE CONCEPT: Fine slicing = program slicing where the programmer can SPECIFY WHICH
+  DEPENDENCES to exclude ("cut points"), producing a more precisely bounded and executable slice.
+  
+  STANDARD SLICING PROBLEM: A backward slice of a statement in a loop often includes the
+  entire loop (because loop iterations are entangled). Standard slices cannot "separate"
+  computations intertwined in a loop.
+  
+  FINE SLICE with cut points:
+    Given a slicing criterion C and a set of CUT POINTS P (dependences to exclude),
+    fine_slice(C, P) = the maximal subset of program statements that:
+    - Contains all statements that contribute to C via paths NOT cut by P
+    - Is EXECUTABLE (semantically valid, produces correct values for C)
+    - Can be EXTRACTED as an independent function
+  
+  CO-SLICE: The complementary slice to a fine slice. If fine_slice(C,P) is extracted,
+  co-slice(C,P) is the remaining computation. Both the fine slice and co-slice are
+  individually executable and correct.
+  
+  LOOP UNTANGLING: Fine slices can separate loop-interleaved computations:
+    e.g., a loop that computes sum AND count simultaneously can be split into
+    a fine slice for sum computation and a fine slice for count computation,
+    even though they share the loop variable i.
+  
+  ALGORITHM STAGES:
+    1. Core slice computation: follow unfiltered dependences backward from C
+    2. Semantic restoration: add necessary branch tests to make slice executable
+    3. Data-flow path compression: handle loop variable access patterns
+    4. Control-flow path compression: add minimal control structure
+  
+  COMPUTATION EXTRACTION ALGORITHM:
+    1. Input: program P, slicing criterion SC
+    2. Compute fine slice FS
+    3. Derive co-slice by disconnecting return values per SC
+    4. Introduce containers for multi-value parameter passing across the boundary
+    5. Insert method calls between extracted components
+  
+  PRACTICAL TOOL: Prototype implemented for COBOL and Java at IBM Research -- Haifa.
+  
+  SIGNIFICANCE FOR pflow: Fine slicing supports extraction of non-contiguous code and
+  can untangle computations intertwined in loops -- the hardest case for standard slicing-based
+  extraction approaches. The cut-point mechanism gives fine-grained control over what to
+  include in an extraction.
+  
+  DOI: 10.1007/978-3-642-28872-2_32
+<<<END>>>
+
+SOURCE
+id: 22
+ts: 2026-05-29T10:27:00Z
+relevance: HIGH
+title: An Introduction to Slice-Based Cohesion and Coupling Metrics
+authors: P. D. Green, P. C. R. Lane, A. Rainer, S. Scholz
+year: 2009
+venue: Technical Report, University of Hertfordshire, UK
+quality: DOCS
+url: https://uhra.herts.ac.uk/id/eprint/12083/
+keywords: survey, slice-based metrics, output variables, step-by-step calculation, CodeSurfer
+content:
+  SCOPE: Survey paper synthesizing all slice-based cohesion and coupling metrics from
+  Weiser 1984 through 2009. Addresses two gaps in existing literature:
+  1. Output variables: surveys the variation in how different research groups define them
+  2. Worked step-by-step calculation examples using CodeSurfer output
+  
+  OUTPUT VARIABLE DEFINITION (survey result showing four elements):
+    1. Function RETURN VALUE
+    2. MODIFIED GLOBAL VARIABLES (variables declared outside function, modified by it)
+    3. MODIFIED REFERENCE PARAMETERS (pass-by-reference params that are written to)
+    4. Variables PRINTED or written to external output (files, stdout, etc.)
+  
+  KEY INSIGHT: The choice of output variable definition significantly affects all slice-based
+  metric values. Researchers have used inconsistent definitions, making metric comparisons
+  between studies unreliable.
+  
+  TOOL USED: CodeSurfer (GrammaTech) for generating SDG/PDG, then manual metric computation
+  from CodeSurfer's slice output.
+  
+  METRICS COVERED:
+    - Weiser (1984): Tightness, Coverage, Overlap
+    - Ott/Thuss (1989, 1993): Metric slices, MinCoverage, MaxCoverage, Parallelism
+    - Bieman/Ott (1994): SFC, WFC, Adhesiveness
+    - Harman et al. (1997): Slice-based coupling (Inflow, Outflow)
+  
+  Alternative URL: https://uhra.herts.ac.uk/id/eprint/12083/1/slice-based-cohesion-and-coupling-metrics-intro.pdf
+<<<END>>>
+
+SOURCE
+id: 23
+ts: 2026-05-29T10:28:00Z
+relevance: HIGH
+title: Refactoring via Program Slicing and Sliding
+authors: (Authors include Harman group, Oxford/UCL affiliation; this is doctoral work by Mathieu Verbaere)
+year: 2007
+venue: Proceedings of the 23rd IEEE International Conference on Software Maintenance (ICSM 2007), IEEE
+quality: PEER-REVIEWED
+url: https://www.computer.org/csdl/proceedings-article/icsm/2007/04362672/12OmNz5s0Ov
+keywords: program sliding, refactoring, sliding transformation, slice-based, computation reordering
+content:
+  PROGRAM SLIDING: A transformation complementary to slicing.
+  
+  SLICING: extracts a subset of statements (projection).
+  SLIDING: REORDERS statements while preserving semantics -- moves statements earlier or later
+  in the program to enable subsequent slicing/extraction.
+  
+  The combination of sliding (to move related statements together) + slicing (to extract them)
+  enables refactoring of programs where related computations are scattered through the code.
+  
+  THESIS CONTEXT: Mathieu Verbaere's Oxford MSc thesis "Program Slicing for Refactoring" (2004),
+  supervised by Oege de Moor. The ICSM 2007 paper is a summary.
+  
+  SIGNIFICANCE: Addresses the case where a computation intended for extraction is not currently
+  contiguous -- sliding creates contiguity, then slicing extracts.
+  
+  RELATED: Program Sliding, a follow-up paper (SpringerLink): extends sliding formalization.
+  URL: https://link.springer.com/chapter/10.1007/978-3-642-31057-7_31
+<<<END>>>
+
+SOURCE
+id: 24
+ts: 2026-05-29T10:29:00Z
+relevance: HIGH
+title: CodeSurfer (GrammaTech)
+authors: GrammaTech Inc.
+year: 2002-present (commercial tool)
+venue: N/A (commercial product)
+quality: INDUSTRY
+url: https://www.grammatech.com/learn/grammatech-releases-codesurfer-1-7-for-c/
+keywords: commercial slicing tool, SDG, interprocedural slicing, pointer analysis, ANSI C, program comprehension
+content:
+  COMMERCIAL IMPLEMENTATION of Horwitz/Reps/Binkley 1990 SDG-based interprocedural slicing.
+  Used by Green et al. 2009 to compute slices for cohesion metric calculations.
+  
+  CAPABILITIES: Precise interprocedural slicing (backward + forward), pointer analysis,
+  program comprehension, navigation via dependence hyperlinks.
+  
+  LANGUAGES: ANSI C primary. C++ and binary analysis in later versions.
+  
+  PRICING (circa 2002): Programmable Package ~$3,995; Entry Package ~$795.
+  
+  PLATFORMS: Windows and Linux.
+  
+  NOTE: Based on the SDG construction from PLDI 1988/TOPLAS 1990. Covered by US patent
+  held by Wisconsin Alumni Research Foundation.
+  
+  ACADEMIC CONNECTION: Multiple slice-based cohesion metric research papers use CodeSurfer
+  as the underlying slicing engine to compute slices, then apply metric formulas on top.
+<<<END>>>
+
+SOURCE
+id: 25
+ts: 2026-05-29T10:30:00Z
+relevance: MED
+title: JDeodorant (Eclipse Plugin for Java Refactoring)
+authors: Nikolaos Tsantalis, Alexander Chatzigeorgiou (Concordia University / University of Macedonia)
+year: 2009-2025 (tool lifetime)
+venue: GitHub / Eclipse Marketplace
+quality: CODE
+url: https://github.com/tsantalis/JDeodorant
+keywords: Java, Eclipse, extract method, PDG, complete computation slice, object state slice, refactoring tool
+content:
+  LANGUAGE: Java (100%)
+  LAST ACTIVITY: v5.0.85, January 5, 2025
+  STARS: 150 forks: 62 commits: 1,144 (MIT license)
+  
+  IMPLEMENTS: Complete computation slice algorithm (Tsantalis/Chatzigeorgiou 2009/2011)
+  and object state slice identification for Java methods.
+  
+  CODE SMELLS ADDRESSED:
+    - Feature Envy → Move Method
+    - Type Checking → Replace Conditional with Polymorphism
+    - Long Method → Extract Method
+    - God Class → Extract Class
+    - Duplicated Code → Extract Clone
+  
+  EXTRACT METHOD IMPLEMENTATION:
+    Uses PDG-based complete computation slicing. Enumerates all possible code slices for
+    all local variables in a method. Applies behavior preservation rules. Presents candidates
+    to developer.
+  
+  MEMORY: JVM requires Xmx4096m for large projects.
+  
+  NOTE: Does not expose standalone API for cohesion metrics; coupled to Eclipse IDE.
+<<<END>>>
+
+SOURCE
+id: 26
+ts: 2026-05-29T10:31:00Z
+relevance: MED
+title: SBSRE (Eclipse Plugin for Java - Single Responsibility Extraction)
+authors: Alireza Ardalani et al.
+year: 2023
+venue: GitHub (open source)
+quality: CODE
+url: https://github.com/Alireza-Ardalani/SBSRE
+keywords: Java, Eclipse, output-based slicing, SRP, single responsibility, extract method
+content:
+  LANGUAGE: Java (100%)
+  IMPLEMENTS: Output-based slicing algorithm (arXiv 2305.03428 / Empirical SE 2023)
+  LICENSE: MIT
+  PLATFORM: Eclipse Neon IDE with JDK 1.8.x
+  
+  ALGORITHM:
+    1. Identify output instructions (return stmts, global variable writes, ref param writes)
+    2. Compute backward PDG slice from each output instruction
+    3. Non-overlapping slices = independent responsibilities = extract opportunity
+    4. Visualize code fragments and suggest extraction
+  
+  NOTE: Focuses on SRP violations specifically, not general cohesion metrics.
+  Measures: WFC, SFC before/after refactoring.
+<<<END>>>
+
+SOURCE
+id: 27
+ts: 2026-05-29T10:32:00Z
+relevance: MED
+title: acheshkov/program_slicing (Python Library)
+authors: acheshkov (GitHub)
+year: 2021-2022 (approximate)
+venue: GitHub
+quality: CODE
+url: https://github.com/acheshkov/program_slicing
+keywords: Python, Java, PDG, CFG, CDG, DDG, program slicing, tree-sitter, networkx, extract method
+content:
+  LANGUAGE: Python 57%, Java support as analysis target
+  IMPLEMENTS: Tsantalis/Chatzigeorgiou (2011) complete computation slice algorithm
+  
+  GRAPH STRUCTURES (all inherit networkx.DiGraph):
+    - CFG (Control Flow Graph): execution paths
+    - CDG (Control Dependence Graph): control dependencies
+    - DDG (Data Dependence Graph): variable dependencies
+    - PDG (Program Dependence Graph): combined CDG + DDG
+  
+  STATEMENT TYPES: FUNCTION, VARIABLE, ASSIGNMENT, CALL, SCOPE, BRANCH, LOOP, GOTO, UNKNOWN, EXIT
+  
+  STATEMENT PROPERTIES:
+    - statement_type (enum)
+    - start_point, end_point (position)
+    - affected_by (variable dependencies)
+    - name, ast_node_type
+  
+  MANAGER CLASS: ProgramGraphsManager
+    Methods: extracting dominated/reachable blocks, identifying affected statements,
+    detecting redundant constructs, retrieving statements in scopes/ranges.
+  
+  CLI: 'slice' command -- decomposes source files into slices
+  
+  AST PARSING: tree-sitter
+  GRAPH OPS: NetworkX
+  REQUIRES: Python 3.9+, C compiler
+  
+  NOTE: No standalone cohesion metrics computation; focused on slice extraction for
+  refactoring identification.
+<<<END>>>
+
+SOURCE
+id: 28
+ts: 2026-05-29T10:33:00Z
+relevance: MED
+title: cohesion (Python tool for measuring Python class cohesion)
+authors: mschwager
+year: 2015-present
+venue: GitHub / PyPI
+quality: CODE
+url: https://github.com/mschwager/cohesion
+keywords: Python, class cohesion, variable usage, method cohesion, Flake8 plugin
+content:
+  LANGUAGE: Python
+  METRIC: Variable usage cohesion (NOT slice-based).
+    For each method: count(class/instance variables used by method) / count(all class/instance vars)
+    Per class: average of all method percentages.
+  
+  NOTE: This is syntactic cohesion based on variable ACCESS, not data-flow slicing.
+  Does NOT implement Bieman/Ott SFC/WFC or Weiser tightness/coverage.
+  Useful as a lightweight approximation but not the same as slice-based metrics.
+  
+  CLI: cohesion --files <file> [--verbose] [--below N] [--above N]
+  FLAKE8: Error code H601 for low cohesion
+<<<END>>>
+
+SOURCE
+id: 29
+ts: 2026-05-29T10:34:00Z
+relevance: MED
+title: CodeScene X-Ray (Function-level Technical Debt Analysis)
+authors: CodeScene AB (Adam Tornhill)
+year: 2017-present (commercial SaaS)
+venue: Commercial product
+quality: INDUSTRY
+url: https://codescene.io/docs/guides/technical/xray.html
+keywords: change coupling, cyclomatic complexity, hotspot, function-level, temporal coupling
+content:
+  X-RAY ANALYSES method/function level within hotspot files.
+  
+  METRICS COMPUTED:
+    - Cyclomatic complexity per function (threshold: >10 concerning, >25 = "maintenance nightmare")
+    - Change frequency per function (from git history)
+    - Lines of code per function
+    - Internal change coupling: % of commits where two functions change together
+    - Code similarity (copy-paste detection between functions)
+  
+  COUPLING SIGNAL: Functions that frequently change together (high change coupling %) →
+  suggests temporal dependency → candidate for co-location or merge/split.
+  
+  PROXIMITY: Distance between temporally coupled functions (counted as intermediate functions).
+  Recommendation to co-locate related functions.
+  
+  NOTE: Not slice-based. Uses VCS history + cyclomatic complexity, NOT data-flow analysis.
+  Does NOT compute SFC/WFC/tightness/overlap.
+  Provides actionable refactoring signals but at a coarser granularity than slice metrics.
+  
+  LIMITATION: X-Ray limited to 200 recent revisions per hotspot. Language support varies.
+  Languages with cyclomatic complexity: Java, C#, C/C++, Objective-C, Kotlin, others.
+<<<END>>>
+
+
+SOURCE
+id: 30
+ts: 2026-05-29T10:40:00Z
+relevance: HIGH
+title: Identifying 'Linchpin Vertices' That Cause Large Dependence Clusters
+authors: David Binkley, Mark Harman (and co-authors)
+year: 2009
+venue: 9th IEEE International Working Conference on Source Code Analysis and Manipulation (SCAM 2009)
+quality: PEER-REVIEWED
+url: https://www.researchgate.net/publication/220703744_Identifying_Linchpin_Vertices_That_Cause_Large_Dependence_Clusters
+keywords: linchpin vertex, dependence cluster, refactoring target, global variable, algorithm
+content:
+  LINCHPIN VERTEX DEFINITION:
+  A linchpin vertex (linchpin variable) is a vertex v in the SDG such that removing v
+  (or breaking its dependences) would significantly REDUCE the size of dependence clusters.
+  Linchpins "hold together" the cluster.
+  
+  MOTIVATION: Large dependence clusters signal code that is hard to decompose.
+  But knowing a cluster exists doesn't tell WHERE to intervene. Linchpins are the
+  specific variables/statements to target for refactoring.
+  
+  TYPICAL LINCHPINS: Global variables are the primary linchpins -- they cause many
+  functions to mutually depend on each other. Eliminating/localizing a global variable
+  can break a large cluster into smaller independent pieces.
+  
+  ALGORITHM: Iterative removal approach: for each vertex v, estimate the cluster size
+  reduction if v were removed. Select top candidates (linchpins) for refactoring.
+  
+  LATER WORK: "Efficient Identification of Linchpin Vertices" (UCL Discovery:1388948) --
+  improved algorithm achieving "almost two orders of magnitude" speedup tested on 38 programs
+  with ~500K lines of code.
+  
+  FOR pflow: Given a function with a large dependence cluster, identify which variables
+  (especially global reads/writes) cause the cluster. Suggest: "Eliminate global dependency
+  on X to enable splitting this function."
+<<<END>>>
+
+SOURCE
+id: 31
+ts: 2026-05-29T10:41:00Z
+relevance: HIGH
+title: Dependence Anti-Patterns
+authors: David Binkley, Nicolas Gold, Mark Harman, Zheng Li
+year: 2008
+venue: 4th International ERCIM Workshop on Software Evolution and Evolvability (EVOL 2008)
+quality: WORKSHOP
+url: http://www0.cs.ucl.ac.uk/staff/mharman/evol08.pdf
+keywords: dependence anti-patterns, structural problems, global variables, coupling, complexity, maintenance
+content:
+  CONCEPT: Dependence anti-patterns are dependence structures that MAY indicate problems
+  for software maintenance and evolution. Not always bad -- they are "warnings to investigate."
+  
+  ANTI-PATTERN TYPES (from search results):
+    - Large dependence clusters (mutually-dependent statement sets)
+    - High coupling via global variables (many functions share global state)
+    - Fan-in / fan-out imbalances in dependence graph
+    - Tangled computations (low cohesion visible as scattered slice membership)
+  
+  EMPIRICAL STUDY: Six real-world programs (open source + production).
+  
+  RELATIONSHIP TO CLUSTERS: Dependence anti-patterns are the structural root causes that
+  manifest as large dependence clusters in the MSG/B-MSG visualization.
+  
+  ACTIONABILITY: Anti-patterns identify WHAT to fix; linchpin identification identifies WHERE.
+<<<END>>>
+
+SOURCE
+id: 32
+ts: 2026-05-29T10:42:00Z
+relevance: HIGH
+title: A Survey of Program Slicing Techniques
+authors: Frank Tip
+year: 1995
+venue: Journal of Programming Languages, vol. 3, no. 3, pp. 121-189, September 1995
+quality: PEER-REVIEWED
+url: https://www.franktip.org/pubs/jpl1995.pdf
+keywords: survey, backward slice, forward slice, dynamic slice, decomposition slice, chopping, taxonomy
+content:
+  COMPREHENSIVE SURVEY covering all major slicing variants as of 1995.
+  1,700+ citations. Still the canonical reference for slicing terminology.
+  
+  TAXONOMY:
+    - STATIC backward slice: S(P, <p,V>) = statements affecting V at p, regardless of input
+    - STATIC forward slice: statements affected by V at p, regardless of input
+    - DYNAMIC slice: slice conditioned on a specific execution trace
+    - DECOMPOSITION slice: D(P, v) = statements affecting v at ANY program point (Gallagher/Lyle 1991)
+    
+  CHOPPING: "determining the subset of the program's statements that cause influences of
+  source elements to reach sink elements" -- defined as a generalization of slicing.
+  
+  KEY DEFINITIONS:
+    - Slicing criterion: <p, V> where p = program point, V = variable set
+    - Slice: subset of statements (or reduced program) preserving behavior w.r.t. criterion
+    - Static slice: over-approximates dynamic behavior (may include statements not executed)
+    
+  DECOMPOSITION SLICING (Section on Gallagher/Lyle):
+    D(P, v) = union of all S(P, <p, {v}>) for all program points p.
+    Forms a lattice under set inclusion. Independent variables have disjoint slices.
+  
+  NOTE: PDF extraction failed (binary encoded); details from secondary sources.
+  
+  DOI / Citation: Frank Tip. "A survey of program slicing techniques." J. Programming Languages, 3(3):121-189, 1995.
+<<<END>>>
+
+SOURCE
+id: 33
+ts: 2026-05-29T10:43:00Z
+relevance: MED
+title: Are Slice-Based Cohesion Metrics Actually Useful in Effort-Aware Post-Release Fault-Proneness Prediction?
+authors: Yang et al.
+year: 2015
+venue: IEEE Transactions on Software Engineering
+quality: PEER-REVIEWED
+url: https://ieeexplore.ieee.org/document/6954519/
+keywords: fault prediction, cohesion metrics, slice-based, empirical, effort-aware
+content:
+  FINDING: Empirical study of whether slice-based cohesion metrics predict fault-prone modules.
+  
+  Context: Slice-based metrics (WFC, SFC, Tightness, Coverage) have theoretical appeal but
+  their practical utility for fault prediction was not established.
+  
+  NOTE: Full text not accessible (IEEE paywall); details from search snippets.
+  Key claim: Slice-based cohesion metrics have limited utility in effort-aware fault prediction
+  compared to simpler structural metrics.
+  
+  RELATED: "An empirical study on dependence clusters for effort-aware fault-proneness prediction"
+  (ASE 2016) -- examined whether dependence cluster size predicts fault-prone modules.
+<<<END>>>
+
+SOURCE
+id: 34
+ts: 2026-05-29T10:44:00Z
+relevance: MED
+title: An Empirical Investigation into the Effect of Slice Types on Slice-Based Cohesion Metrics
+authors: (multiple authors)
+year: 2016
+venue: Information and Software Technology (Elsevier), DOI: 10.1016/j.infsof.2016.04.001
+quality: PEER-REVIEWED
+url: https://www.sciencedirect.com/science/article/abs/pii/S0950584916300556
+keywords: end-slice, metric-slice, cohesion metrics, empirical, open-source, PCA
+content:
+  RESEARCH QUESTION: Should end-slices (backward slice from end of function) or metric-slices
+  (Ott/Thuss union of backward + forward slices) be used for computing slice-based cohesion?
+  
+  METRICS STUDIED: Coverage, MaxCoverage, MinCoverage, Tightness, Overlap (five statement-level
+  end-slice-based cohesion metrics).
+  
+  DATASET: 40 widely used open-source software systems.
+  
+  KEY FINDING: Correlation analysis and PCA show that end-slice-based and metric-slice-based
+  cohesion metrics "essentially measure the same software cohesion dimensions."
+  → Using either type of slice gives equivalent cohesion signals.
+  
+  PRACTICAL IMPLICATION FOR pflow: Standard backward slice (simpler to implement) is
+  sufficient; metric-slices (more complex) do not provide additional cohesion information.
+  
+  Published April 2016.
+  DOI: 10.1016/j.infsof.2016.04.001
+<<<END>>>
+
+SOURCE
+id: 35
+ts: 2026-05-29T10:45:00Z
+relevance: MED
+title: Measuring Design-Level Cohesion
+authors: Byung-Kyoo Kang, James M. Bieman
+year: 1998
+venue: IEEE Transactions on Software Engineering, vol. 24, no. 2, pp. 111-124, February 1998
+quality: PEER-REVIEWED
+url: https://ieeexplore.ieee.org/document/666825/
+keywords: design-level cohesion, OO cohesion, association-based, slice-based, design metrics
+content:
+  EXTENSION: Applies Bieman/Ott (1994) SFC/WFC cohesion metrics to DESIGN LEVEL (UML/design
+  documents) rather than requiring source code.
+  
+  KEY RESULT: Association-based and slice-based approaches can both measure cohesion from
+  design-level information. Design-level measures correspond closely with code-level slice
+  measures (validated empirically).
+  
+  SIGNIFICANCE: Enables cohesion measurement earlier in development lifecycle (at design stage).
+  
+  FUNCO TOOL: The Funco tool (Colorado State) implements both code-level and design-level
+  cohesion metrics; design-level supported by this paper.
+  
+  DOI: 10.1109/32.666825
+<<<END>>>
+
+SOURCE
+id: 36
+ts: 2026-05-29T10:46:00Z
+relevance: MED
+title: Ottenstein/Ottenstein 1984: Program Dependence Graph in Software Development Environment
+authors: Karl J. Ottenstein, Linda M. Ottenstein
+year: 1984
+venue: Proceedings ACM SIGSOFT/SIGPLAN Software Engineering Symposium on Practical Software Development Environments, pp. 177-184
+quality: PEER-REVIEWED
+url: https://digitalcommons.mtu.edu/michigantech-p/12603/
+keywords: PDG, program dependence graph, slicing, vertex reachability, linear time
+content:
+  FIRST PAPER to connect PDGs to slicing.
+  
+  KEY OBSERVATION: Given a program represented as a PDG, the slicing problem reduces to
+  a vertex-reachability problem. Thus slices can be computed in LINEAR TIME O(V+E).
+  
+  This is the insight that makes PDG-based slicing practical. Before this, Weiser's
+  original slicing algorithm required multiple dataflow passes (more expensive).
+  
+  Preceded Ferrante/Ottenstein/Warren 1987 (which formalized the PDG definition more fully)
+  and Horwitz/Reps/Binkley 1990 (which extended to interprocedural SDG).
+<<<END>>>
+
+
+SOURCE
+id: 37
+ts: 2026-05-29T10:50:00Z
+relevance: HIGH
+title: Assessing the Impact of Global Variables on Program Dependence and Dependence Clusters
+authors: Dave Binkley, Mark Harman, Youssef Hassoun, Syed Islam, Zheng Li, Kiarash Mahdavi
+year: 2010
+venue: Journal of Systems and Software, vol. 83, no. 1, pp. 96-107, January 2010
+quality: PEER-REVIEWED
+url: https://www.sciencedirect.com/science/article/abs/pii/S0164121209000843
+keywords: global variables, dependence clusters, pollution, program dependence, empirical study
+cites: Binkley/Harman 2005, Harman et al. 2009 TOPLAS
+content:
+  SCOPE: Empirical study of 21 programs (~50K LOC) measuring global variables' impact on
+  dependence cluster sizes.
+  
+  KEY FINDINGS:
+    - Over half of studied programs have a global variable with significant impact on program dependence
+    - A quarter of programs have a global variable SOLELY responsible for a dependence cluster
+    - Global variables are the dominant cause of large dependence clusters
+  
+  ALGORITHM: Transformation-based analysis:
+    For each global variable g, simulate removing/localizing g (replacing with parameter).
+    Measure reduction in: (1) slice sizes, (2) cluster sizes, (3) overall dependence quantity.
+    Variables with large reduction = high-impact "polluting" globals.
+  
+  FOR pflow: When analyzing a function with large dependence clusters:
+    1. Identify global variable reads/writes within the function
+    2. For each global g, measure how much cluster size decreases if g were localized
+    3. Report: "Variable X is causing entanglement -- localizing it would enable splitting"
+  
+  DOI: 10.1016/j.jss.2009.08.045
+<<<END>>>
+
+SOURCE
+id: 38
+ts: 2026-05-29T10:51:00Z
+relevance: MED
+title: Cognitive Complexity -- A New Way of Measuring Understandability (White Paper)
+authors: G. Ann Campbell (SonarSource)
+year: 2018 (v1.0), updated 2021
+venue: SonarSource White Paper / ACM TechDebt 2018 (conference version)
+quality: INDUSTRY
+url: https://www.sonarsource.com/resources/cognitive-complexity/
+keywords: cognitive complexity, cyclomatic complexity alternative, nesting, control flow, understandability
+content:
+  COGNITIVE COMPLEXITY DEFINITION:
+  A metric for measuring how hard a function is to understand, not just how many paths.
+  
+  INCREMENT RULES:
+    +1 for each: if, else if, else, switch, for, while, do-while, catch, ternary operator,
+    boolean sequence of operators (each sequence of && or || counts once)
+    
+    ADDITIONAL NESTING PENALTY: +1 for each level of nesting at the time of the increment.
+    Deeply nested ifs cost more than shallow ones.
+    
+    NO increment for: logical operators in simple expressions, early returns
+  
+  DIFFERENCE FROM CYCLOMATIC:
+    - Cyclomatic: counts linearly independent paths (each boolean operator = +1)
+    - Cognitive: penalizes nesting; doesn't count boolean operators individually;
+      counts sequences of same operator as one increment
+    
+  REFACTORING SIGNAL: High cognitive complexity → deeply nested, hard to extract.
+  Functions with CC > 15-25 are typically flagged for decomposition.
+  
+  ACM paper: "Cognitive complexity" at 2018 International Conference on Technical Debt.
+  DOI: 10.1145/3194164.3194186
+<<<END>>>
+
+SOURCE
+id: 39
+ts: 2026-05-29T10:52:00Z
+relevance: MED
+title: Using Maximal Slices as a Solution to the 'Output Variable' Problem for Calculating Slice-Based Cohesion Metrics
+authors: James Hamilton
+year: (date unknown, published on jameshamilton.eu research page)
+venue: Research paper / technical report (Dr James Hamilton)
+quality: BLOG
+url: https://jameshamilton.eu/research/using-maximal-slices-solution-output-variable-problem-calculating-slice-based-cohesion
+keywords: maximal slice, output variable problem, cohesion metrics, slice-based, normalization
+content:
+  THE OUTPUT VARIABLE PROBLEM:
+  Different researchers define "output variables" differently, leading to:
+    - Different sets of slicing criteria per function
+    - Incomparable metric values across studies
+    
+  MAXIMAL SLICES SOLUTION:
+  Define cohesion metrics using MAXIMAL SLICES instead of output-variable slices.
+  A maximal slice MS(P) is a slice that is not a proper subset of any other slice of P.
+    MS is maximal iff there is no other slice S' such that MS ⊂ S'.
+  
+  KEY PROPERTY: A maximal slice cannot be a "sub-task" of a larger task within the function.
+  It represents the largest consistent dependency closure for its criterion.
+  
+  BENEFIT: Eliminates the need to define "output variables" -- computation is based on
+  the structure of the program alone.
+  
+  COHESION REDEFINED: Compute Tightness/Coverage/etc using only maximal slices as criteria.
+  Functions with many non-overlapping maximal slices have low cohesion (multiple independent
+  maximal computations).
+<<<END>>>
+
+
+SOURCE
+id: 40
+ts: 2026-05-29T10:55:00Z
+relevance: HIGH
+title: A Vocabulary of Program Slicing-Based Techniques
+authors: Josep Silva
+year: 2012
+venue: ACM Computing Surveys, vol. 44, no. 3, article 12, June 2012
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1145/2187671.2187674
+keywords: taxonomy, decomposition slicing, chopping, backward slice, forward slice, survey, classification
+content:
+  COMPREHENSIVE TAXONOMY of 30+ slicing-based techniques.
+  
+  VERBATIM DEFINITION OF DECOMPOSITION SLICING (Section 2.25, citing Gallagher/Lyle 1991):
+    "Decomposition slicing was introduced in the context of software maintenance to capture
+    all computation on a given variable. The objective of this technique is to extract those
+    program statements which are needed to compute the values of a given variable."
+    
+    CRITERION: Single variable v (no program point required).
+    
+    COMPUTATION:
+    "The slice is built from the union of the static backward slices constructed for the
+    criteria {<n1, v>, ..., <nm, v>, <end, v>} where {n1,...,nm} is the set of lines in
+    which v is output and end is the 'End' of the program."
+    
+    INSTANCE: "decomposition slicing is an instance of simultaneous slicing where the set
+    of slicing criteria is derived from the variable and the program."
+    
+    QUESTION ANSWERED: "What statements of the program can affect this variable?"
+    MAIN APPLICATIONS: Software maintenance, testing, program comprehension.
+  
+  VERBATIM DEFINITION OF CHOPPING (Section 2.6, citing Jackson/Rollins 1994):
+    "In chopping, the slicing criterion selects two sets of variables, source and sink, and
+    then it computes all the statements in the program that being affected by source, they
+    affect sink. Therefore, chopping is a generalization of both forward and backward slicing
+    where either source or sink is empty."
+    
+    "As noted by Reps and Rosay [1995], chopping is particularly useful to detect those
+    statements that 'transmit effects' from one part of the program (source) to another (sink)."
+    
+    QUESTION ANSWERED: "What program statements can influence these variables at this statement
+    while they are influenced by these (other) variables at this other statement?"
+    MAIN APPLICATIONS: Program analysis and debugging.
+  
+  EXAMPLE CHOP (from paper):
+    Program: augmented word-count with variables lines, chars, subtext.
+    chop(source={line 3, vars={lines}}, sink={line 16, vars={lines}}) =
+      {lines=1, while loop body with lines update, write(lines)}
+    
+    chop(source={line 3, vars={lines}}, sink={line 9, vars={lines}}) =
+      {lines=1; lines=lines+1;}
+    [Chop is much smaller than full backward/forward slices!]
+  
+  RELATIONSHIPS BETWEEN TECHNIQUES (from Figure 29):
+    Decomposition slice IS-A Simultaneous slice (special case with criteria derived from program)
+    Chopping IS-A Generalization of both forward and backward slicing
+    Chopping = intersection of forward_slice(source) and backward_slice(sink) [intraprocedural]
+    Context-sensitive chopping (Reps/Rosay) is strictly more precise than naive intersection
+  
+  DOI: 10.1145/2187671.2187674
+<<<END>>>
+
+
+SOURCE
+id: 41
+ts: 2026-05-29T11:00:00Z
+relevance: HIGH
+title: Interprocedural Slicing Using Dependence Graphs (SDG Paper -- Additional Technical Details)
+authors: Susan Horwitz, Thomas Reps, David Binkley
+year: 1990
+venue: ACM TOPLAS vol. 12, no. 1, January 1990 (journal version of PLDI 1988)
+quality: PEER-REVIEWED
+url: https://www.csa.iisc.ac.in/~raghavan/CleanedPav2011/horwitz-sdg-slicing-1990.pdf
+keywords: SDG construction, summary edges, attribute grammar, linkage grammar, two-pass algorithm
+content:
+  SDG CONSTRUCTION DETAILS (extracted from verbatim PDF text):
+  
+  "A system dependence graph includes a program dependence graph, which represents the
+  system's main program, procedure dependence graphs, which represent the system's auxiliary
+  procedures, and some additional edges. These additional edges are of two sorts:
+  (1) edges that represent direct dependences between a call site and the called procedure,
+  (2) edges that represent transitive dependences due to calls."
+  
+  PARAMETER PASSING NODES (to handle value-result parameters at call sites):
+    - ACTUAL-IN node: represents actual parameter being passed in (at call site)
+    - ACTUAL-OUT node: represents actual parameter being passed back out (at return)
+    - FORMAL-IN node: formal parameter received at procedure entry
+    - FORMAL-OUT node: formal parameter being returned
+    
+    PARAMETER-IN EDGE: actual_in →_pi formal_in
+    PARAMETER-OUT EDGE: formal_out →_po actual_out
+    CALL EDGE: call_site →_call procedure_entry
+    
+  SUMMARY EDGES: Key innovation.
+    A SUMMARY EDGE actual_in →_sum actual_out means:
+    "The value of actual_in at the call site transitively affects actual_out after the return."
+    Computed using the LINKAGE GRAMMAR (attribute grammar representing call/param relationships).
+    Summary edges allow interprocedural slices to be computed in two graph traversal passes.
+  
+  TWO-PASS SLICING ALGORITHM:
+    Pass 1: Backward traversal from target, crossing only:
+      - Intra-procedural edges (control, flow, def-order within a procedure)
+      - PARAMETER-OUT edges (formal_out → actual_out: going from callee to caller)
+      - SUMMARY edges (short-circuit of call/return through a call site)
+      Do NOT cross CALL edges (actual → formal: going INTO callee) in Pass 1.
+    
+    Pass 2: Another backward traversal, crossing only:
+      - Intra-procedural edges
+      - CALL edges (into callees)
+      - PARAMETER-IN edges (actual_in → formal_in)
+      Do NOT cross PARAMETER-OUT or SUMMARY edges in Pass 2.
+    
+    Combined result: precise context-sensitive interprocedural slice.
+    
+  CORRECTNESS: Two-pass prevents the calling-context problem that affected Weiser's algorithm.
+  "Weiser's method... fails to account for the calling context of a called procedure."
+  
+  COMPLEXITY NOTES: Building SDG (including summary edges): expensive (polynomial in edge count).
+  Slicing given SDG: O(V+E) per slice.
+<<<END>>>
+
+SOURCE
+id: 42
+ts: 2026-05-29T11:01:00Z
+relevance: HIGH
+title: Precise Interprocedural Chopping (Additional Complexity Details)
+authors: Thomas Reps, Genevieve Rosay
+year: 1995
+venue: Proc. 3rd ACM SIGSOFT Symposium on Foundations of Software Engineering (FSE-3), Washington DC, pp. 41-49
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/10.1145/222132.222138
+keywords: interprocedural chopping, context-sensitive, SDG, summary edges, complexity
+content:
+  COMPLEXITY:
+    Assumes SDG's summary edges already computed in:
+    O((P × E × Params) + (CSites × Params³))
+    where P = procedures, E = edges, Params = parameters per procedure, CSites = call sites.
+    
+    The chopping algorithm itself: not simple linear time.
+    "The algorithm is, however, rather complicated to implement."
+  
+  CONTEXT-SENSITIVITY: First context-sensitive interprocedural chopping algorithm.
+  Distinguishes different invocations of the same procedure (different call sites get different slices).
+  
+  KEY DIFFERENCE from Jackson/Rollins 1994:
+    - Jackson/Rollins: intraprocedural only (source and target in same procedure)
+    - Reps/Rosay: full interprocedural with correct calling context
+  
+  DOI: 10.1145/222132.222138
+<<<END>>>
+
+
+SOURCE
+id: 43
+ts: 2026-05-29T11:05:00Z
+relevance: HIGH
+title: Extract Method Refactoring by Successive Edge Contraction
+authors: Omkarendra Tiwari, Rushikesh K. Joshi
+year: 2019
+venue: arXiv:1908.04636 [cs.SE], August 2019
+quality: PREPRINT
+url: https://arxiv.org/abs/1908.04636
+keywords: structure dependence graph, edge contraction, segmentation, extract method, language independent
+content:
+  CORE APPROACH: "Segmentation" -- identify method sub-tasks by contracting edges in a
+  Structure Dependence Graph (SDG).
+  
+  NOTE: This paper's SDG is different from Horwitz/Reps/Binkley's SDG (System Dependence Graph).
+  Here SDG = Structure Dependence Graph = a method-level dependence representation.
+  
+  STRUCTURE DEPENDENCE GRAPH:
+    Nodes = statements in a method
+    Edges = data and control dependence relationships (similar to PDG but method-local)
+    Then collapsed into "segment graph" capturing dependence between sub-tasks.
+  
+  THREE EDGE CONTRACTIONS (determine how to identify segments):
+    1. STRUCTURAL CONTROL EDGE CONTRACTION: Contract control dependence edges
+       (merge control-dependent statements with their controlling predicate).
+    2. EXCLUSIVE DATA DEPENDENCE EDGE CONTRACTION: Contract edges where data flows
+       exclusively within a sub-computation (no data crossing the potential boundary).
+    3. SEQUENTIAL DATA DEPENDENCE EDGE CONTRACTION: Contract edges for sequential
+       data flow (def-use chains within a linear sequence).
+  
+  SEGMENT GRAPH: After contractions, remaining graph nodes = "segments" = extractable chunks.
+  Non-adjacent segments with thin interfaces between them are extraction candidates.
+  
+  LANGUAGE INDEPENDENCE: The intermediate SDG representation is language-agnostic.
+  
+  EVALUATION: Four case studies (three open source).
+  
+  KEY INSIGHT FOR pflow: Successive edge contraction = a different way to find extraction
+  boundaries than slice-based approaches. Start with all dependencies, then collapse
+  "tightly coupled" pairs iteratively. What's left = natural partition of the function.
+  
+  COMPARISON TO SLICING APPROACH: Instead of "compute slice, check if extractable",
+  this approach "contract strongly-coupled statements into atomic segments, then find
+  optimal segment groupings."
+<<<END>>>
+
+SOURCE
+id: 44
+ts: 2026-05-29T11:06:00Z
+relevance: MED
+title: python_graphs Library (Machine Learning over Code)
+authors: David Bieber, Kensen Shi, Petros Maniatis, Charles Sutton, Vincent Hellendoorn, Daniel Johnson, Daniel Tarlow
+year: 2022
+venue: arXiv:2208.07461 [cs.LG], August 2022
+quality: PREPRINT
+url: https://arxiv.org/abs/2208.07461
+keywords: Python, CFG, program graph, data flow, static analysis, ML for code
+content:
+  LIBRARY: python_graphs (open source, Apache/CC-BY 4.0)
+  LANGUAGE: Python
+  
+  GRAPH TYPES:
+    - Control-flow graphs (CFG)
+    - Data-flow graphs (DFG)
+    - Composite "program graphs" (combine CFG, DFG, syntactic, lexical)
+  
+  USE CASE: Primarily for ML over code (training datasets for neural models), not directly
+  for cohesion metrics. But provides the underlying graph structures needed.
+  
+  NOTE: Does not implement slice-based cohesion metrics (SFC/WFC/tightness) out of the box.
+  Provides the infrastructure (CFG, data-flow graphs) that would be needed as input.
+  
+  AVAILABLE: open source on GitHub (Google Research).
+<<<END>>>
+
+
+SOURCE
+id: 45
+ts: 2026-05-29T11:10:00Z
+relevance: HIGH
+title: Using a Concept Lattice of Decomposition Slices for Program Understanding and Impact Analysis
+authors: Paolo Tonella
+year: 2003
+venue: IEEE Transactions on Software Engineering, vol. 29, no. 6, pp. 495-509, June 2003
+quality: PEER-REVIEWED
+url: https://dl.acm.org/doi/abs/10.1109/TSE.2003.1205178
+keywords: concept lattice, decomposition slices, slice graph, program understanding, impact analysis, formal concept analysis
+cites: Gallagher/Lyle 1991
+content:
+  EXTENSION OF GALLAGHER/LYLE 1991: Applies formal concept analysis to decomposition slices
+  to create a richer program representation.
+  
+  DECOMPOSITION SLICE GRAPH (recap from Gallagher/Lyle 1991):
+    Nodes = decomposition slices D(P, vi) for each output variable vi
+    Edges = when D(P, vi) ∩ D(P, vj) ≠ ∅ (non-empty intersection = dependence)
+    Partitions program into computations on different variables.
+    Shows dependence relations between computations.
+  
+  CONCEPT LATTICE OF DECOMPOSITION SLICES (Tonella's contribution):
+    Uses formal concept analysis to organize decomposition slices into a hierarchy:
+    - Nodes = "concepts" where a concept = (extent, intent):
+        extent = set of output variables sharing a common slice subset
+        intent = the common slice subset
+    - Edges = generalization/specialization relationships between concepts
+    
+    The lattice is an EXTENSION of the decomposition slice graph:
+    "The concept lattice of decomposition slices... is obtained through concept analysis,
+    with additional nodes associated with weak interferences between computations."
+    
+    BENEFIT OVER SLICE GRAPH: Lattice reveals PARTIAL OVERLAP patterns that the simple
+    slice graph (which only shows binary edge/no-edge) cannot capture.
+  
+  APPLICATION: Impact analysis -- given a change to variable v, the lattice identifies
+  which other variables are affected and to what degree.
+  
+  DOI: 10.1109/TSE.2003.1205178
+<<<END>>>
+
+SOURCE
+id: 46
+ts: 2026-05-29T11:11:00Z
+relevance: MED
+title: Are Decomposition Slices Clones?
+authors: Keith B. Gallagher
+year: 2003
+venue: 3rd IEEE International Workshop on Source Code Analysis and Manipulation (SCAM 2003)
+quality: WORKSHOP
+url: http://www.cs.loyola.edu/~kbg/clone.pdf
+keywords: decomposition slices, clone detection, slice graph, program comprehension
+content:
+  QUESTION: When computing all decomposition slices for a program, many slices are identical.
+  Are identical decomposition slices a form of code clone?
+  
+  DECOMPOSITION SLICE GRAPH (confirmed definition):
+    Partitions program into computations performed on different variables.
+    Shows dependence relations: when computation A needs computation B as a building block,
+    there is an edge from A to B in the graph.
+  
+  FINDING: Arguments BOTH for and against treating identical decomposition slices as clones:
+    - FOR: Some identical slices arise from "failure to note appropriate abstractions"
+      (same pattern used repeatedly without extracting to a function)
+    - AGAINST: Slice-clones do not arise from programmer intent or copying
+    
+  PRACTICAL IMPLICATION: Identical decomposition slices = candidates for "Extract Function"
+  (common computation that appears multiple times = should be a shared helper function).
+<<<END>>>
+
+
+SOURCE
+id: 47
+ts: 2026-05-29T11:15:00Z
+relevance: HIGH
+title: Bieman/Ott 1994 Worked Example (canonical numbers from paper)
+authors: James M. Bieman, Linda M. Ott
+year: 1994
+venue: IEEE TSE vol. 20 no. 8 (same as Record id:2), extracted from paper's Figure 4 example
+quality: PEER-REVIEWED
+url: https://www.cs.colostate.edu/~bieman/Pubs/tse94new.pdf
+keywords: worked example, SFC, WFC, adhesiveness, data tokens, glue tokens, calculation
+content:
+  CANONICAL WORKED EXAMPLE from paper Figure 4 (procedure SA):
+    Total data tokens in procedure: 11
+    Glue tokens: 5 (appear in ≥2 data slices)
+    Superglue tokens: 2 (appear in all data slices)
+    
+    BREAKDOWN of glue token distribution:
+      - 2 tokens appear in 3 slices (superglue OR near-superglue, contribution to adhesiveness: 2×3)
+      - 3 tokens appear in 2 slices (plain glue, contribution: 3×2)
+    
+    CALCULATIONS:
+      WFC(SA) = 5/11 = 0.455
+      SFC(SA) = 2/11 = 0.182
+      A(SA) = (2×3 + 3×2) / (11 × number_of_slices)
+             = (6 + 6) / denominator = 0.36
+      
+      [NOTE: exact denominator depends on k=number of slices; if k=3 then denominator=33,
+       so A = 12/33 = 0.364 ≈ 0.36. Confirms k=3 slices (3 output variables) in this example.]
+  
+  INTERPRETATION OF THESE VALUES:
+    WFC=0.455: About half of data tokens are shared across ≥2 computations (moderate cohesion)
+    SFC=0.182: Only 2/11 tokens appear in ALL slices (weak universal core)
+    A=0.36: Low-to-moderate adhesiveness overall
+    
+    REFACTORING SIGNAL from these values: Function has some shared computation (WFC>0) but
+    no strong unified core (low SFC). Multiple partially-overlapping computations.
+    Candidate for careful decomposition examining which pairs of output variables have
+    highest pairwise cohesion (Jaccard similarity of their slices).
+<<<END>>>
+
+
+SOURCE
+id: 48
+ts: 2026-05-29T11:16:00Z
+relevance: HIGH
+title: CONSOLIDATED FORMULAS REFERENCE -- Slice-Based Cohesion Metrics
+authors: [synthesized from Weiser 1984, Ott/Thuss 1989/1993, Bieman/Ott 1994]
+year: N/A
+venue: N/A (synthesis record)
+quality: DOCS
+url: N/A
+keywords: tightness, coverage, overlap, SFC, WFC, adhesiveness, min-coverage, max-coverage, parallelism, formulas
+content:
+  NOTATION:
+    M = module (function) being measured
+    |M| = number of statements in M
+    k = number of output variables (= number of slices/data-slices)
+    Si = backward slice (or metric slice) for output variable i, |Si| = slice size
+    S_all = S1 ∩ S2 ∩ ... ∩ Sk (intersection of ALL slices)
+    DT = set of all data tokens in M, |DT| = total data token count
+    GT = set of glue tokens (in ≥2 data slices)
+    SGT = set of superglue tokens (in all k data slices)
+    A(t) = adhesiveness of token t = number of data slices containing t
+  
+  WEISER (1984) STATEMENT-LEVEL METRICS (use full slices, not data-token-level):
+  
+    TIGHTNESS:       T(M)    = |S_all| / |M|
+    COVERAGE:        Cov(M)  = (1/k) × sum_i(|Si|) / |M|
+    OVERLAP:         OL(M)   = (1/k) × sum_i(|Si ∩ S_all| / |Si|)
+  
+  OTT/THUSS (1989, 1993) ADDITIONAL METRICS (use metric slices = backward ∪ forward):
+  
+    MIN-COVERAGE:    MinCov(M) = min_i(|Si|) / |M|
+    MAX-COVERAGE:    MaxCov(M) = max_i(|Si|) / |M|
+    PARALLELISM:     PAR(M)   = 1 - (1/k) × sum_i(|Si ∩ S_all| / |Si|)  [= 1 - OL]
+  
+  BIEMAN/OTT (1994) DATA-TOKEN-LEVEL METRICS:
+  
+    WFC(M) = |GT| / |DT|
+           = count(tokens in ≥2 data slices) / count(all data tokens)
+    
+    SFC(M) = |SGT| / |DT|
+           = count(tokens in ALL k data slices) / count(all data tokens)
+    
+    A(M) = sum_{t ∈ GT} A(t) / (|DT| × k)
+         = (sum of per-glue-token slice-membership counts) / (total tokens × slice count)
+  
+  USEFUL DERIVED SIGNALS FOR pflow:
+  
+    SPLIT SIGNAL: SFC = 0 AND WFC < threshold → function has no universal core and
+      little sharing → multiple independent computations → strong split candidate.
+    
+    TIGHTNESS SIGNAL: T near 0 → no statement common to all slices → no unified core.
+    
+    HIGH PARALLELISM: PAR near 1 → slices barely overlap → fully parallel computations
+      → clean split possible.
+    
+    PAIRWISE COHESION (for choosing WHICH variables to group when splitting):
+      C(vi, vj) = |S_i ∩ S_j| / |S_i ∪ S_j|  (Jaccard similarity)
+      Group variables with high C(vi,vj); extract each group as separate function.
+      
+    THINNEST SEAM: For each candidate split point p in a function F (where statements
+      before p and after p form two groups G1, G2):
+      SEAM_WIDTH(p) = count of variables that are both DEFINED in G1 and USED in G2
+                    + count of variables DEFINED in G2 and USED in G1
+      Choose p that minimizes SEAM_WIDTH(p).
+      Alternatively: for decomposition slices D(F,{outputs_G1}) and D(F,{outputs_G2}):
+      INTERFACE_SIZE = |D(F,{o_G1}) ∩ D(F,{o_G2})| 
+      (size of shared statements = coupling at the boundary).
+      Minimize INTERFACE_SIZE to find the thinnest seam.
+<<<END>>>
+
+
+SOURCE
+id: 49
+ts: 2026-05-29T11:17:00Z
+relevance: HIGH
+title: ALGORITHM SKETCH -- Slice-Based Refactoring / Function Decomposition for pflow
+authors: [synthesized from Gallagher/Lyle 1991, Bieman/Ott 1994, Tsantalis/Chatzigeorgiou 2011, Gold/Harman 1999]
+year: N/A
+venue: N/A (synthesis record)
+quality: DOCS
+url: N/A
+keywords: algorithm, pflow, function splitting, slice-based, cohesion, seam finding, refactoring
+content:
+  ALGORITHM FOR SLICE-BASED FUNCTION DECOMPOSITION IN pflow:
+  
+  INPUT: Function F with CFG, dominators/post-dominators, def-use chains (already built by pflow).
+         Output variables of F: {o1, o2, ..., ok} (return val, global writes, ref-param writes, output calls)
+  
+  STEP 1 -- COMPUTE DECOMPOSITION SLICES:
+    For each output variable oi:
+      D(F, oi) = union of backward_slice(F, <p, oi>) for all p where oi is used/defined.
+      (In practice: build PDG from pflow's CFG + def-use, then do backward reachability from
+       all final def/use nodes of oi.)
+  
+  STEP 2 -- COMPUTE COHESION METRICS:
+    S_all = D(F, o1) ∩ D(F, o2) ∩ ... ∩ D(F, ok)
+    T(F) = |S_all| / |F|                              (tightness)
+    Cov(F) = (1/k) × sum_i |D(F,oi)| / |F|           (coverage)
+    
+    For Bieman/Ott metrics: enumerate data tokens in each data slice.
+    WFC(F), SFC(F), A(F) as per formulas in Record id:48.
+  
+  STEP 3 -- DETECT DEPENDENCE CLUSTERS:
+    Compute backward_slice(s) for each statement s in F.
+    Find plateau in MSG: statements with same slice size → dependence cluster.
+    If large cluster exists (>50% of F): report "entangled core, consider fixing globals first."
+    Identify linchpin variables (global reads/writes) causing the cluster.
+  
+  STEP 4 -- FIND SPLIT CANDIDATES (if T(F) < threshold or SFC(F) ≈ 0):
+  
+    4a. PAIRWISE COHESION APPROACH (Gold/Harman 1999):
+        For each pair (oi, oj): C(oi,oj) = |D(F,oi) ∩ D(F,oj)| / |D(F,oi) ∪ D(F,oj)|
+        Cluster output variables by C values (low C = unrelated → different extracted functions).
+        
+    4b. DISJOINT SLICE APPROACH (Gallagher/Lyle 1991):
+        Group output variables into G1, G2, ... such that slices for each group are
+        nearly/fully disjoint from slices for other groups.
+        If D(F, G1) ∩ D(F, G2) = ∅: clean split possible.
+        If D(F, G1) ∩ D(F, G2) ≠ ∅: shared statements must be either:
+          (a) duplicated (if safe), or
+          (b) extracted into a helper function called by both halves.
+  
+  STEP 5 -- VERIFY EXTRACTABILITY (Tsantalis/Chatzigeorgiou 2011 rules):
+    For each proposed extraction E = D(F, Gi):
+    - E forms a valid SESE region (single-entry single-exit in CFG)?
+      If not: extend to nearest SESE boundary (the "Wedge" step from Lakhotia/Deprez 1998).
+    - Extraction would not require duplicating object-state mutations?
+    - Extraction would not violate anti-dependences or output-dependences?
+  
+  STEP 6 -- COMPUTE BOUNDARY (what crosses the boundary):
+    INTERFACE(F, Gi, Gj) = {variables v | v is defined in D(F,Gi) and used in D(F,Gj)}
+                           ∪ {variables v | v is defined in D(F,Gj) and used in D(F,Gi)}
+    Report: "Splitting at this boundary requires passing N variables across the boundary: {list}."
+    Lower INTERFACE size → thinner seam → easier/cleaner split.
+  
+  STEP 7 -- CHOPPING FOR EXPLANATION (Reps/Rosay 1995):
+    For each significant data flow in F (source_stmt → sink_stmt):
+    chop(source_stmt, sink_stmt) = path of statements transmitting effects.
+    Report: "These statements implement the computation from X to Y."
+    Useful for explaining WHAT each slice does (not just WHERE to split).
+  
+  OUTPUT (what pflow should report):
+    - Cohesion metrics: T, Cov, SFC, WFC, A
+    - Dependence cluster presence and size (with linchpin identification)
+    - Split recommendations: "Split into F1({o1}) and F2({o2,o3}), boundary passes {v1, v2}"
+    - SESE region boundaries for each proposed extraction
+    - Tightness of proposed extracted functions (will extraction improve cohesion?)
+<<<END>>>
+
+SEARCH_LOG
+query: "Gallagher Lyle 1991 decomposition slicing independent computations" | results: 5 useful | top: Using Program Slicing in Software Maintenance (IEEE TSE 1991)
+query: "Bieman Ott 1994 measuring functional cohesion SFC WFC IEEE TSE" | results: 6 useful | top: Measuring Functional Cohesion (IEEE TSE 1994) 
+query: "Ott Thuss 1989 1993 slice-based cohesion metrics" | results: 5 useful | top: An Empirical Study of Slice-Based Cohesion and Coupling Metrics (Loyola PDF)
+query: "Reps Rosay 1995 program chopping interprocedural" | results: 4 useful | top: Precise Interprocedural Chopping (research.cs.wisc.edu PDF)
+query: "Lakhotia Deprez 1998 tuck wedge split fold extract function" | results: 4 useful | top: Restructuring Programs by Tucking Statements into Functions (ScienceDirect)
+query: "Binkley Harman dependence clusters large slice coupling complexity" | results: 5 useful | top: Coherent Dependence Clusters (UCL)
+query: "Harman Binkley Counsell slice-based coupling metric" | results: 4 useful | top: An Empirical Study of Slice-Based Cohesion and Coupling Metrics (ACM TOSEM)
+query: "Bieman Ott 1994 SFC WFC exact PDF Colorado State" | results: 2 useful | top: tse94new.pdf (binary PDF, unreadable)
+query: "Reps Rosay precise interprocedural chopping FSE95" | results: 2 useful | top: fse95b.pdf (binary PDF)
+query: "Gallagher Lyle IEEE TSE 83912 decomposition slice definition" | results: 3 useful | top: Semantic Scholar page
+query: "PDG partitioning function splitting min-cut" | results: 1 useful | top: PtrSplit (unrelated program partitioning)
+query: "decomposition slice slice graph independent computations algorithm" | results: 2 useful | top: Are Decomposition Slices Clones? (Gallagher 2003)
+query: "Binkley Harman dependence clusters monotone slice-size MSG" | results: 4 useful | top: Dependence clusters in source code (TOPLAS 2009)
+query: "Harman 1997 slice-based measurement coupling cohesion" | results: 3 useful | top: An Empirical Study TOSEM 2007
+query: "JDeodorant slice-based extract method Eclipse PDG" | results: 4 useful | top: GitHub tsantalis/JDeodorant
+query: "slice-based extract method output variables partition cohesion splitting algorithm" | results: 4 useful | top: Using Maximal Slices... Hamilton
+query: "Tsantalis Chatzigeorgiou 2011 complete computation slice PDG behavior preservation" | results: 3 useful | top: Identification of extract method... JSS 2011
+query: "Weiser 1984 program slicing TSE cohesion overlap tightness" | results: 3 useful | top: Program slices as abstraction for cohesion measurement
+query: "Bieman Ott adhesiveness formula data token glue superglue worked example" | results: 3 useful | top: Funco documentation (Colorado State)
+query: "slice-based cohesion Python implementation open source" | results: 2 useful | top: cohesion (PyPI) -- syntactic only
+query: "Jackson Rollins 1994 program chopping generalization slicing" | results: 4 useful | top: Chopping: A Generalization of Slicing (CMU-CS-94-169)
+query: "fine slicing theory computation extraction Abadi Ettinger" | results: 3 useful | top: Fine Slicing Theory and Applications FASE 2012
+query: "Ferrante Ottenstein Warren 1987 PDG control data dependence" | results: 3 useful | top: The Program Dependence Graph and Its Use in Optimization (TOPLAS)
+query: "Horwitz Reps Binkley 1990 interprocedural slicing SDG" | results: 5 useful | top: Interprocedural Slicing Using Dependence Graphs (TOPLAS 1990) -- text extracted from PDF
+query: "Gold Harman 1999 restructuring functions low cohesion WCRE" | results: 3 useful | top: Restructuring functions with low cohesion (IEEE WCRE 1999)
+query: "Meyers Binkley 2007 TOSEM slice coupling inflow outflow" | results: 4 useful | top: An Empirical Study of Slice-Based Cohesion and Coupling Metrics TOSEM
+query: "slice based cohesion calibrating thresholds practical" | results: 3 useful | top: Calibrating program slicing metrics for practical use (Counsell et al.)
+query: "linchpin vertices dependence clusters Binkley Harman 2009" | results: 3 useful | top: Identifying Linchpin Vertices (SCAM 2009)
+query: "dependence clusters global variables JSS 2010 Binkley Harman" | results: 3 useful | top: Assessing impact of global variables (JSS 2010)
+query: "Vocabulary program slicing Silva 2012 ACM Computing Surveys" | results: 5 useful | top: A Vocabulary of Program Slicing-Based Techniques (ACM Surveys) -- text extracted
+query: "concept lattice decomposition slices Tonella TSE 2003" | results: 3 useful | top: Using a Concept Lattice of Decomposition Slices (IEEE TSE 2003)
+query: "SBSRE Eclipse plugin single responsibility extraction GitHub" | results: 3 useful | top: GitHub Alireza-Ardalani/SBSRE
+query: "CodeScene X-Ray function level cohesion change coupling" | results: 3 useful | top: X-Ray documentation (codescene.io)
+query: "extract method successive edge contraction PDG 2019" | results: 3 useful | top: Extract Method Refactoring by Successive Edge Contraction (arXiv 2019)
+query: "Green Lane Rainer Scholz 2009 introduction slice-based cohesion coupling metrics" | results: 3 useful | top: An Introduction to Slice-Based Cohesion and Coupling Metrics (UH Tech Report)
+query: "empirical investigation slice types cohesion metrics 2016" | results: 3 useful | top: An Empirical Investigation into Effect of Slice Types (IST 2016)
+query: "are decomposition slices clones Gallagher 2003 SCAM" | results: 3 useful | top: Are Decomposition Slices Clones? (SCAM 2003)
+<<<END>>>
+
+GAPS
+Full text of Bieman/Ott 1994 IEEE TSE paper (tse94new.pdf) -- PDF binary extraction failed; formulas reconstructed from secondary sources and Funco documentation
+Full text of Reps/Rosay 1995 FSE paper (fse95b.pdf) -- PDF binary extraction failed; details from search snippets and ACM DOI metadata
+Full text of Ott/Thuss 1989 ICSE paper -- no full-text accessible online; details from secondary surveys only
+Full text of Ott/Thuss 1993 Metrics Symposium paper -- no full-text accessible online
+Full text of Lakhotia/Deprez 1998 IST paper -- ScienceDirect paywall; algorithm reconstructed from citing papers
+Full text of Gold/Harman 1999 WCRE paper -- IEEE Xplore paywall; algorithm reconstructed from citing papers
+Full text of Harman et al. 1997 "Slice-based measurement of coupling" -- ICSE workshop paper; only metadata accessible
+Full text of Meyers/Binkley 2007 TOSEM paper (tosem07-slice-metrics.pdf) -- connection refused at PDF download; details from ACM abstract
+Full text of Harman et al. 2009 "Dependence clusters in source code" TOPLAS -- ACM paywall; details from search snippets
+Full text of Tip 1995 survey (jpl1995.pdf) -- PDF binary extraction failed (8MB PDF); key definitions from secondary citations
+Exact algorithm for "Restructuring Functions with Low Cohesion" (Gold/Harman 1999) -- pairwise cohesion partition algorithm details not fully specified
+Exact algorithm of Reps/Rosay chopping -- "complicated to implement"; complexity formula from search but not step-by-step
+Calibrating threshold values for practical use of T, Cov, SFC, WFC (Counsell et al.) -- no full text accessible; thresholds partially from Green et al. 2009
+Linchpin vertex algorithm exact formulation (Binkley/Harman 2009) -- only high-level description from search snippets
+"Coherent clusters in source code" JSS paper (coherent-clusters-jss-online.pdf) -- connection error at download
+"Assessing impact of global variables" JSS 2010 (jss10-8293-globals.pdf) -- connection error at download
+Exact complexity formula for Meyers/Binkley coupling metric (inflow/outflow combination)
+Any existing Python/open-source implementation of Bieman/Ott SFC/WFC metrics (not found; only Java implementations in JDeodorant/SBSRE)
+Any research applying slice-based cohesion specifically to Python code (searches found only general-language work or Java-specific tools)
+Fine slicing full technical specification (PDF binary failed; slides extract gave high-level description only)
+Formal proof of safe extraction conditions for decomposition slices (not found beyond Gallagher/Lyle prose)
+Graph min-cut approach to finding optimal PDG partition boundary (no directly relevant academic paper found; PtrSplit closest but for security partitioning not cohesion)
+SonarQube's exact Cognitive Complexity increment rules (white paper gated behind form; rules reconstructed from blog posts)
+Funco tool source code (Colorado State -- URLs work but tool is for C only, no public repository found)
+<<<END>>>
+
