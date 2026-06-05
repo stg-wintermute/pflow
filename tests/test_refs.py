@@ -2,7 +2,7 @@
 
 from conftest import build, defs_named
 
-from pflow.refs import parse_ref, resolve, resolve_node, Ref
+from pflow.ir.refs import parse_ref, resolve, resolve_node, Ref
 
 
 def test_parse_full_ref():

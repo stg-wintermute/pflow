@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Set, Tuple
 
 from ..ir.graph import FunctionGraph
-from ..refs import resolve_node
+from ..ir.refs import resolve_node
 
 
 @dataclass

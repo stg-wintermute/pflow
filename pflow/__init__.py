@@ -3,9 +3,9 @@ from .ir import (
     build_cfg_from_source, build_cfg_from_ast,
 )
 from .analysis import run_dataflow, walk, Step, format_walk
-from .inspect_live import build_cfg_from_live
-from .bytecode import get_basic_blocks, get_exception_table, bytecode_to_simple_cfg, offset_to_line_map
-from .refs import parse_ref, resolve, Ref, format_agent_ref
+from .ir.inspect_live import build_cfg_from_live
+from .ir.bytecode import get_basic_blocks, get_exception_table, bytecode_to_simple_cfg, offset_to_line_map
+from .ir.refs import parse_ref, resolve, Ref, format_agent_ref
 from .analysis.hybrid import attach_dis_info, correct_exception_edges, suggest_exception_edges
 from .analysis.callgraph import build_callgraph
 from .analysis.paths import find_paths

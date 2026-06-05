@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from pflow.program import _build_file
+from pflow.analysis.program import _build_file
 from pflow.analysis.opportunities import run_passes
 
 CORPUS_DIR = Path(__file__).parent / "fixtures" / "corpus"

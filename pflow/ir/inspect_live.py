@@ -12,7 +12,7 @@ import textwrap
 from types import MethodType
 from typing import Any
 
-from .ir import build_cfg_from_source
+from .cfg import build_cfg_from_source
 from .bytecode import get_basic_blocks, get_exception_table
 
 

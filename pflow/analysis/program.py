@@ -19,9 +19,9 @@ import pickle
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
-from .ir import FunctionGraph
-from .ir.cfg import build_cfg_from_ast
-from .analysis.dataflow import run as run_dataflow
+from ..ir import FunctionGraph
+from ..ir.cfg import build_cfg_from_ast
+from .dataflow import run as run_dataflow
 
 _SKIP_DIRS = {"__pycache__", ".venv", "venv", ".git", "build", "dist",
               ".mypy_cache", ".pytest_cache", "node_modules", ".tox", ".eggs"}

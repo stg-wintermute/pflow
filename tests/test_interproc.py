@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from pflow.program import build_program
+from pflow.analysis.program import build_program
 from pflow.analysis.interproc import (
     program_callgraph, entrypoints, cycles, state_map, trace_value,
 )

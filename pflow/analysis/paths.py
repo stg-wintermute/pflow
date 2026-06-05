@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import List
 
 from ..ir import FunctionGraph
-from ..refs import resolve_node
+from ..ir.refs import resolve_node
 
 
 def _to_block_id(g: FunctionGraph, ref) -> int | None:

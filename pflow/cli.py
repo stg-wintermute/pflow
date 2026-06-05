@@ -31,11 +31,11 @@ from . import (
 )
 from .ir import FunctionGraph
 from .analysis.dominance import compute_dominators, compute_post_dominators
-from .program import build_program
+from .analysis.program import build_program
 from .analysis.interproc import (
     program_callgraph, entrypoints, hubs, cycles, state_rows, trace_value,
 )
-from .refs import parse_ref, resolve
+from .ir.refs import parse_ref, resolve
 
 
 # -- exit-code signalling ------------------------------------------------
@@ -365,7 +365,7 @@ def _print_cfg_human(g: FunctionGraph) -> None:
 
 def _print_bytecode_view(g: FunctionGraph, target: str) -> None:
     """Show the dis-derived block view (the control-flow oracle, RFC §7.3)."""
-    from .bytecode import get_basic_blocks, get_exception_table, offset_to_line_map
+    from .ir.bytecode import get_basic_blocks, get_exception_table, offset_to_line_map
 
     code = g.attrs.get("code_object") or _compile_target_code(target)
     if code is None:

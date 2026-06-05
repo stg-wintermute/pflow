@@ -1,5 +1,5 @@
 from ..ir import FunctionGraph
-from ..bytecode import get_basic_blocks, get_exception_table, offset_to_line_map
+from ..ir.bytecode import get_basic_blocks, get_exception_table, offset_to_line_map
 
 
 def attach_dis_info(g: FunctionGraph, code=None) -> FunctionGraph:
