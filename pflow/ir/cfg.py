@@ -780,6 +780,15 @@ class _CFGBuilder:
         return tuple(dict.fromkeys(out))
 
     def _collect_loads(self, node: ast.AST, bound: set, out: List[str]) -> None:
+        if isinstance(node, ast.NamedExpr):
+            # walrus: value first, then the target is BOUND for everything
+            # evaluated after it (PEP 572 — including a genexp element reading
+            # a filter's walrus: `... for r in rs if (t := f(r))` then `t`).
+            # Mutating the active set is correct: left-to-right visibility.
+            self._collect_loads(node.value, bound, out)
+            if isinstance(node.target, ast.Name):
+                bound.add(node.target.id)
+            return
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
             inner = set(bound)
             for i, gen in enumerate(node.generators):
@@ -1067,4 +1076,8 @@ def build_cfg_from_source(
     node = _find_function(tree, qualname)
     if node is None:
         raise ValueError(f"no function named {qualname!r} found in {source_path}")
-    return build_cfg_from_ast(node, source_path, qualname=qualname)
+    g = build_cfg_from_ast(node, source_path, qualname=qualname)
+    # compiler scope truth overrides the AST-walked approximations
+    from .scopes import module_scope_index, attach_scope_truth
+    attach_scope_truth(g, module_scope_index(source, source_path))
+    return g

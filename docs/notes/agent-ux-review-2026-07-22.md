@@ -393,6 +393,74 @@ view existed → the function report gains a **state footprint line**
 (`writes self.X · mutates? self.Y (deep call paths) · reads self.Z`), with
 `self.m()` method roots correctly excluded from reads.
 
+## Phase 15: external-agent review response + first compile-level oracle
+
+An independent agent reviewed pflow against seeker and filed three friction
+items — all fixed, plus two the diagnosis pointed at:
+
+- **Cycle fabrications dissolved at the root**: an attribute call can only
+  land on a METHOD — `state.db.get_rental()` no longer edges to the app.py
+  route function. seeker: 9 reported cycles → 4, all real. Census/callgraph
+  headlines now tier `(N sharp · M smeared~)` when smear remains.
+- **`--focus` accepts every pasteable spelling** (bidirectional path-suffix +
+  qualname match): the census prints `server/cloud.py:f`, the user pastes
+  `seeker/server/cloud.py:f`, both resolve.
+- **`dataflow --anomalies`**: only path-dependent uses (multi-def, with def
+  lines) and never-read defs; explicit one-line null result.
+- **Bytecode definite-assignment oracle** (first compile-level integration):
+  CPython 3.12+ emits LOAD_FAST_CHECK exactly where ITS flow analysis cannot
+  prove a local bound. use-before-def findings on compiler-proven locals are
+  dropped as artifacts; findings the compiler also flags carry "compiler
+  agrees". compile() only, lazy (zero cost on clean functions), module-code
+  cached per (path, mtime); graphs carry _abs_path so program mode works.
+- **Walrus-in-comprehension FP** (found by the oracle's blind spot — the
+  walrus target is a CELLVAR, invisible to co_varnames): `sum(now - t ... if
+  (t := parse(r)))` leaked `t` as an unbound use; _collect_loads now binds
+  NamedExpr targets left-to-right per PEP 572.
+
+seeker after this round: use-before-def 2 → 1 (the survivor is
+compiler-corroborated), cycles 9 → 4 (all real).
+
+## Phase 16: the interpreter stack as co-analyst (goal: maximal use of
+## CPython's own representations)
+
+Premise correction first: CPython is not JIT-compiled by default — it always
+compiles to bytecode (the 3.11+ adaptive interpreter specializes at runtime;
+the 3.13 copy-and-patch JIT is experimental/off). The static artifacts of
+that pipeline ARE available without executing anything, and pflow now uses
+the two highest-value ones:
+
+- **symtable (compiler symbol table)** — attached on every source-bearing
+  build path via one pass per file (`ir/scopes.py`): compiler-verified
+  locals, frees (captures, incl. read-only), declared globals, and
+  descendant nonlocal writes now OVERWRITE the AST-walked approximations
+  behind the same attrs (`nonlocal_decls`/`global_decls`/`nonlocal_writes`),
+  with the AST walkers demoted to fallback for source-less builds. The four
+  closure FP classes from the obol audit are now prevented by construction,
+  not by our re-implementation of scope rules.
+- **LOAD_FAST_CHECK oracle (3.12+)** — the compiler's own definite-assignment
+  analysis: use-before-def findings on locals the compiler PROVED bound are
+  dropped as artifacts; findings it also cannot prove carry "compiler
+  agrees". compile()-only, lazy, module-code cached.
+
+Measured/reasoned skips (so they aren't re-attempted blindly):
+- **Exception-table tightening**: the table's protected offset ranges
+  coincide with AST try-regions, and any instruction inside one may raise —
+  the delta over current block-level edges is ~zero. (The existing
+  `correct_exception_edges` is ADDITIVE, line-heuristic — do not wire it
+  program-wide.) The real precision lever here would be per-op
+  raise-potential, an IR change, not a bytecode read.
+- **co_positions()**: AST spans already carry full line/col ranges; the
+  bytecode mapping only wins when source is unavailable.
+- **co_consts folding**: compiler folds constant expressions, but mapping
+  folded results back to branch ops is not worth it for const-branch's
+  literal scope.
+- **Adaptive specialization / JIT uops**: runtime type feedback requires
+  EXECUTING warm code — out of pflow's static stance. Documented as the
+  possible future `live-hot:` mode (run a workload, read specialized
+  instructions as poor-man's type inference — would collapse ~k smear for
+  hot paths); Tier-2 uops have no stable API.
+
 ## Roadmap — all items above resolved (implemented or measured-and-rejected)
 
 1. **Raise the sound-tier yield — this is the trust ceiling.** Distrust is

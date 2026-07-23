@@ -35,6 +35,54 @@ def get_basic_blocks(code: CodeType) -> List[Tuple[int, List[dis.Instruction]]]:
     return blocks
 
 
+_MODULE_CODE_CACHE: dict = {}    # (path, mtime_ns) -> compiled module code | None
+
+
+def function_code(source_path: str, qualname: str):
+    """The compiled code object for `qualname` inside `source_path`, or None.
+    compile() only — nothing is executed. Cached per (path, mtime)."""
+    import os
+    try:
+        st = os.stat(source_path)
+    except OSError:
+        return None
+    key = (source_path, st.st_mtime_ns)
+    if key not in _MODULE_CODE_CACHE:
+        _MODULE_CODE_CACHE.clear()               # one file at a time is plenty
+        try:
+            import tokenize
+            with tokenize.open(source_path) as f:
+                _MODULE_CODE_CACHE[key] = compile(f.read(), source_path, "exec")
+        except (OSError, SyntaxError, ValueError):
+            _MODULE_CODE_CACHE[key] = None
+    module_code = _MODULE_CODE_CACHE[key]
+    if module_code is None:
+        return None
+
+    want = qualname.replace(".<locals>", "")
+
+    def find(code):
+        for const in code.co_consts:
+            if isinstance(const, CodeType):
+                if const.co_qualname.replace(".<locals>", "") == want:
+                    return const
+                hit = find(const)
+                if hit is not None:
+                    return hit
+        return None
+
+    return find(module_code)
+
+
+def unbound_checked_names(code: CodeType) -> frozenset:
+    """Locals the COMPILER could not prove definitely assigned: CPython 3.12+
+    emits LOAD_FAST_CHECK (instead of LOAD_FAST) for exactly those loads.
+    A local absent from this set had every load proven bound by the compiler
+    — a free, compiler-grade definite-assignment oracle."""
+    return frozenset(i.argval for i in dis.get_instructions(code)
+                     if i.opname == "LOAD_FAST_CHECK")
+
+
 def get_exception_table(code: CodeType) -> List[dict]:
     raw = getattr(code, "co_exceptiontable", None)
     if not raw:

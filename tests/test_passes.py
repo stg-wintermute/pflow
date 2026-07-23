@@ -538,6 +538,69 @@ def test_decomposition_skips_dunder_init():
 
 # -- analysis-correctness regressions (found by dogfooding) --------------
 
+def test_symtable_scope_truth_attached_and_correct():
+    # the compiler's symbol table overrides AST-walked scope approximations
+    # on every source-bearing build path
+    g = build("""
+        def outer():
+            stop = False
+            total = 0
+            def on_sig():
+                nonlocal stop
+                stop = True
+            def reader():
+                return total + (1 if stop else 0)
+            return on_sig, reader
+    """, "outer")
+    assert g.attrs.get("scope_truth") == "symtable"
+    assert set(g.attrs["nonlocal_writes"]) == {"stop"}     # not total (read-only)
+    assert {"stop", "total", "on_sig", "reader"} <= set(g.attrs["sym_locals"])
+
+
+def test_symtable_truth_in_program_mode(tmp_path):
+    from pflow.analysis.program import build_program
+    (tmp_path / "m.py").write_text(
+        "def outer():\n"
+        "    n = 0\n"
+        "    def bump():\n"
+        "        nonlocal n\n"
+        "        n += 1\n"
+        "    return bump\n")
+    pg = build_program(str(tmp_path), use_cache=False)
+    outer = pg.functions["m.py:outer"]
+    bump = pg.functions["m.py:outer.bump"]
+    assert outer.attrs.get("scope_truth") == "symtable"
+    assert set(outer.attrs["nonlocal_writes"]) == {"n"}
+    assert set(bump.attrs["nonlocal_decls"]) == {"n"}
+
+
+def test_walrus_in_genexp_filter_not_use_before_def():
+    # `sum(x - t ... for r in rs if (t := f(r)))`: PEP 572 binds t before the
+    # element reads it (and makes it a CELLVAR, invisible to co_varnames, so
+    # the bytecode oracle can't veto) — found live on seeker's cmd_status.
+    g = build("""
+        def f(rs, now):
+            return sum(now - t for r in rs if (t := parse(r)))
+    """, "f")
+    assert find_use_before_def(g) == []
+
+
+def test_bytecode_oracle_corroborates_maybe_unbound():
+    # graphs built via file paths get the LOAD_FAST_CHECK cross-check
+    import textwrap, tempfile, os
+    src = "def f(c):\n    if c:\n        y = 1\n    return y\n"
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as fh:
+        fh.write(src)
+    try:
+        from pflow.ir.cfg import build_cfg_from_source
+        from pflow.analysis.dataflow import run as run_df
+        g = run_df(build_cfg_from_source(src, "f", source_path=fh.name))
+        opps = find_use_before_def(g)
+        assert opps and "compiler agrees" in (opps[0].detail or "")
+    finally:
+        os.unlink(fh.name)
+
+
 def test_comprehension_var_not_use_before_def():
     # Bug B: the `b` bound by a comprehension is its own scope, not a
     # function-level use-before-def.

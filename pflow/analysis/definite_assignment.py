@@ -121,4 +121,34 @@ def find_use_before_def(graph: FunctionGraph) -> List[Opportunity]:
                                    f"branch (correlated guards are the usual "
                                    f"false alarm)"))
             assigned.update(op.targets)
-    return out
+    return _bytecode_oracle(graph, out)
+
+
+def _bytecode_oracle(graph: FunctionGraph, out: List[Opportunity]) -> List[Opportunity]:
+    """Cross-check findings against the COMPILER's definite-assignment
+    analysis: CPython 3.12+ emits LOAD_FAST_CHECK precisely where it cannot
+    prove a local bound. A finding on a local the compiler proved (plain
+    LOAD_FAST everywhere) is an artifact of our model — drop it; a finding the
+    compiler also flags gets corroborated in its detail. Zero cost when there
+    are no findings; compile() only, nothing executes."""
+    if not out:
+        return out
+    from ..ir.bytecode import function_code, unbound_checked_names
+    path = graph.attrs.get("_abs_path") or graph.source_path
+    code = graph.attrs.get("code_object")
+    if code is None and path:
+        code = function_code(path, graph.qualname)
+    if code is None:
+        return out
+    checked = unbound_checked_names(code)
+    fast_locals = set(code.co_varnames)
+    kept: List[Opportunity] = []
+    for o in out:
+        name = o.ref.split(":use:")[-1].split("@")[0] if ":use:" in o.ref else None
+        if name and name in fast_locals:
+            if name not in checked:
+                continue                       # compiler proved every load bound
+            o.detail = ((o.detail + " · ") if o.detail else "") + \
+                "compiler agrees (LOAD_FAST_CHECK emitted for this local)"
+        kept.append(o)
+    return kept

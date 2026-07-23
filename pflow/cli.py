@@ -160,6 +160,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("dataflow", help="Reaching definitions / def-use")
     p.add_argument("target")
     p.add_argument("--var", help="focus on this name")
+    p.add_argument("--anomalies", action="store_true",
+                   help="only the unusual rows: uses with multiple reaching "
+                        "defs (path-dependent values) and defs nothing reads "
+                        "— empty output means the def-use structure is plain")
     add_agent_flags(p)
 
     tgt_help = "file.py:func (optional if the --from ref embeds path:qualname)"
@@ -367,7 +371,10 @@ def _dispatch(args, dense: bool) -> int:
 
     elif cmd == "dataflow":
         g = _load_graph(args.target)
-        _print_dataflow(g, args.var)
+        if args.anomalies:
+            _print_dataflow_anomalies(g, args.var)
+        else:
+            _print_dataflow(g, args.var)
 
     elif cmd == "walk":
         g = _load_graph(_resolve_target(args.target, args.start))
@@ -659,6 +666,43 @@ def _print_dataflow(g: FunctionGraph, var: Optional[str]) -> None:
                 print(f"  use:{u.id} {u.name} (bb{u.block_id}) <- {src}")
 
 
+def _print_dataflow_anomalies(g: FunctionGraph, var: Optional[str]) -> None:
+    """The inverse of the full def-use dump: print ONLY what deserves a second
+    look. A use fed by several defs means the value is path-dependent (which
+    branch assigned it decides what this line sees); a def with no reader is
+    either dead or read through a channel the IR can't see. No rows = the
+    def-use structure is plain — a cheap, explicit null result."""
+    def_by_id = {d.id: d for d in g.defs}
+    read_ids = {i for u in g.uses for i in u.reaching_defs}
+    n_multi = n_unread = 0
+
+    for u in g.uses:
+        if var and u.name != var:
+            continue
+        if len(u.reaching_defs) > 1 and "." not in u.name:
+            lns = sorted({def_by_id[i].source[0] for i in u.reaching_defs
+                          if i in def_by_id and def_by_id[i].source})
+            n_multi += 1
+            print(f"  path-dependent  use:{u.name} (bb{u.block_id}) ← "
+                  f"{len(u.reaching_defs)} defs @ "
+                  + ",".join(f"L{x}" for x in lns[:6]))
+
+    args_op_ids = {op.id for b in g.blocks[:1] for op in b.ops
+                   if op.attrs.get("kind") == "args"}
+    for d in g.defs:
+        if var and d.name != var:
+            continue
+        if (d.id not in read_ids and d.op_id not in args_op_ids
+                and "." not in d.name and not d.name.startswith("_")):
+            ln = f"@L{d.source[0]}" if d.source else ""
+            n_unread += 1
+            print(f"  never-read      def:{d.name}{ln} (bb{d.block_id})")
+
+    if not n_multi and not n_unread:
+        print(f"{g.qualname}: no anomalies — every use has a single reaching "
+              f"def and every def is read")
+
+
 def _print_metrics(g: FunctionGraph) -> None:
     # Positional measurement only: numbers, no threshold verdicts. The
     # "this is a hotspot (> N)" judgment lives in `opportunities`, not here.
@@ -685,9 +729,26 @@ def _print_report(g: FunctionGraph) -> None:
 
 
 def _resolve_fqname(pg, needle: str) -> Optional[str]:
+    """Accept every spelling a user can plausibly paste: the exact fq, any
+    path-suffix of it, a LONGER path than the program root uses (the census
+    prints `server/cloud.py:f` but the user pastes `seeker/server/cloud.py:f`
+    from their CWD — suffix matching must work in BOTH directions), a bare
+    qualname, or a bare function name."""
     if needle in pg.functions:
         return needle
-    hits = [fq for fq in pg.functions if fq.endswith(needle) or fq.split(":")[-1] == needle]
+    needle = needle.lstrip("./")
+    if ":" in needle:
+        npath, nqual = needle.split(":", 1)
+        hits = [fq for fq in pg.functions
+                if fq.split(":", 1)[1] == nqual
+                and (fq.split(":", 1)[0].endswith(npath)
+                     or npath.endswith(fq.split(":", 1)[0]))]
+        if hits:
+            return hits[0]
+    hits = [fq for fq in pg.functions
+            if fq.endswith(needle)
+            or fq.split(":", 1)[1] == needle
+            or fq.split(":")[-1].split(".")[-1] == needle]
     return hits[0] if hits else None
 
 
@@ -734,12 +795,19 @@ def _print_callgraph(pg, focus: Optional[str], depth: int,
     for fq, fi, fo in hubs(cg, 12):
         if fi or fo:
             print(f"  {fi:3}<- {fo:3}->  {fq}")
+    from .analysis.interproc import cycle_is_smeared
     cy = cycles(cg)
-    print(f"cycles ({len(cy)}):")
-    for c in cy[:10]:
+    sharp = [c for c in cy if not cycle_is_smeared(cg, c)]
+    smeared = [c for c in cy if cycle_is_smeared(cg, c)]
+    head = (f"{len(sharp)} sharp · {len(smeared)} smeared~ (every closing "
+            f"edge is name-resolution)" if smeared else f"{len(cy)}")
+    print(f"cycles ({head}):")
+    for c in (sharp + smeared)[:10]:
         names = [x.split(':')[-1] for x in c]
-        label = "recursive: " + names[0] if len(c) == 1 else " <-> ".join(names[:6])
-        print(f"  {label}")
+        mark = "  ~" if cycle_is_smeared(cg, c) else ""
+        label = ("recursive: " + names[0] if len(c) == 1
+                 else " <-> ".join(names[:6]))
+        print(f"  {label}{mark}")
 
 
 def _print_classes(pg) -> None:

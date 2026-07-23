@@ -322,14 +322,21 @@ def format_program_report_agent(pg) -> str:
     cy = cycles(cg)
     if cy:
         from ..analysis.interproc import cycle_is_smeared
-        labels = []
-        for c in cy[:5]:
+        sharp = [c for c in cy if not cycle_is_smeared(cg, c)]
+        smeared = [c for c in cy if cycle_is_smeared(cg, c)]
+
+        def label(c, mark=""):
             names = [x.split(":")[-1] for x in c]
-            mark = "~" if cycle_is_smeared(cg, c) else ""
-            labels.append(("recursive: " + names[0] if len(c) == 1
-                           else " ↔ ".join(names[:4])) + mark)
-        tail = f" (+{len(cy) - 5})" if len(cy) > 5 else ""
-        lines.append(f"  {'cycles':<9}({len(cy)})  " + " · ".join(labels) + tail)
+            return ("recursive: " + names[0] if len(c) == 1
+                    else " ↔ ".join(names[:4])) + mark
+
+        head = (f"({len(sharp)} sharp · {len(smeared)} smeared~)"
+                if smeared else f"({len(cy)})")
+        shown = [label(c) for c in sharp[:4]] + \
+                [label(c, "~") for c in smeared[:2]]
+        rest = len(cy) - len(shown)
+        tail = f" (+{rest})" if rest > 0 else ""
+        lines.append(f"  {'cycles':<9}{head}  " + " · ".join(shown) + tail)
 
     rows = state_rows(pg)
     flagged = [c for c in rows if c.flags]

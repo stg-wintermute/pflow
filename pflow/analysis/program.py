@@ -210,6 +210,11 @@ class ProgramGraph:
             return set()
         if dotted_other:
             hits.discard(caller_fqname)
+            # an attribute call can only land on a METHOD: `state.db.get_rental()`
+            # can never invoke a module-level `get_rental` in another file
+            # (module receivers already resolved through imports in step 2).
+            # This smear fabricated a 4-node "rental cycle" out of an app route.
+            hits = {fq for fq in hits if "." in fq.split(":", 1)[1]}
         return hits
 
     def _module_by_name(self, name: str) -> Optional[str]:
@@ -348,7 +353,9 @@ def build_program(root: str, exclude_tests: bool = False,
             pg.errors[relpath] = err
             continue
         pg.modules[relpath] = mod
+        abs_path = pg.root if root_is_file else os.path.join(pg.root, relpath)
         for fq, g in funcs.items():
+            g.attrs.setdefault("_abs_path", abs_path)   # for bytecode oracles
             pg.functions[fq] = g
             pg._func_module[fq] = relpath
 
@@ -460,6 +467,8 @@ def _build_file(relpath: str, src: str):
     tree = ast.parse(src, filename=relpath)
     mod = ModuleInfo(relpath=relpath, module_name=_module_name(relpath))
     funcs: Dict[str, FunctionGraph] = {}
+    from ..ir.scopes import module_scope_index, attach_scope_truth
+    scope_idx = module_scope_index(src, relpath)      # one symtable pass/file
 
     # module-level imports + globals (top-level only)
     top_level_imports = set()
@@ -549,7 +558,9 @@ def _build_file(relpath: str, src: str):
                 fq = f"{relpath}:{qual}"
                 try:
                     g = run_dataflow(build_cfg_from_ast(child, relpath, qualname=qual))
-                    g.attrs["global_decls"] = _global_decls(child)
+                    g.attrs["global_decls"] = (set(g.attrs.get("global_decls", set()))
+                                               | _global_decls(child))
+                    attach_scope_truth(g, scope_idx)
                     funcs[fq] = g
                     mod.func_qualnames.append(fq)
                     if cls_stack:

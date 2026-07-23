@@ -420,6 +420,48 @@ def test_function_passed_as_argument_creates_marked_edge(capsys, tmp_path):
     assert "route -fn-> check" in out
 
 
+# -- review-feedback round (external agent on seeker) ----------------------------
+
+def test_attribute_call_cannot_hit_module_function(capsys, tmp_path):
+    # `state.db.get_rental()` must NOT edge to a module-level route named
+    # get_rental in another file — attribute calls land on methods only
+    # (fabricated a 4-node "rental cycle" in the seeker review).
+    (tmp_path / "app.py").write_text(
+        "def get_rental(rid):\n    return rid\n")
+    (tmp_path / "cloud.py").write_text(
+        "def patch(state, rid):\n    return state.db.get_rental(rid)\n")
+    code, out, _ = run(capsys, "callgraph", str(tmp_path), "--to", "get_rental",
+                       "--no-cache")
+    assert code == 0
+    assert "patch" not in out                       # no fabricated chain
+
+
+def test_focus_accepts_longer_pasted_path(capsys, tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "mod.py").write_text("def f():\n    return g()\n\ndef g():\n    return 1\n")
+    # census prints `mod.py:f`; a user pastes the longer CWD-relative form
+    code, out, _ = run(capsys, "callgraph", str(pkg),
+                       "--focus", f"{pkg}/mod.py:f", "--no-cache")
+    assert code == 0 and "callgraph from" in out and "g" in out
+
+
+def test_dataflow_anomalies_mode(capsys, tmp_path):
+    f = tmp_path / "a.py"
+    f.write_text(
+        "def merged(c):\n"
+        "    if c:\n        x = 1\n"
+        "    else:\n        x = 2\n"
+        "    return x\n\n"
+        "def plain(a):\n"
+        "    y = a + 1\n"
+        "    return y\n")
+    code, out, _ = run(capsys, "dataflow", f"{f}:merged", "--anomalies")
+    assert code == 0 and "path-dependent" in out and "2 defs" in out
+    code, out, _ = run(capsys, "dataflow", f"{f}:plain", "--anomalies")
+    assert code == 0 and "no anomalies" in out
+
+
 # -- callgraph precision ---------------------------------------------------------
 
 def test_delegate_same_name_is_not_recursion(capsys, tmp_path):
