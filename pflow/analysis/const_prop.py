@@ -23,11 +23,18 @@ _TOP = object()  # "not a constant"
 
 def constant_values(graph: FunctionGraph) -> Dict[int, Dict[str, object]]:
     """block_id -> {name: literal} of names definitely constant at block entry."""
+    # A name any nested def rebinds via `nonlocal` is never constant here:
+    # every call may flip it (seeker-dev's `stop` flag, set by a signal
+    # handler closure, was reported constant-False — a sound-tier FP).
+    volatile = graph.attrs.get("nonlocal_writes", frozenset())
+
     def transfer(blk, in_fact):
         out = dict(in_fact)
         for op in blk.ops:
             for t in op.targets:
-                if "const_value" in op.attrs and len(op.targets) == 1:
+                if t in volatile:
+                    out[t] = _TOP
+                elif "const_value" in op.attrs and len(op.targets) == 1:
                     out[t] = op.attrs["const_value"]
                 else:
                     out[t] = _TOP            # computed/loop/except/param -> unknown

@@ -97,6 +97,61 @@ def test_two_param_mutations_on_one_line():
     assert {o.title.split("`")[1] for o in found} == {"dst", "src"}
 
 
+def test_repeat_sites_merge_into_one_finding():
+    # N writes through the same param via the same mutation kind = ONE finding
+    # listing the sites — per-site findings rendered as identical lines and
+    # read as tool noise.
+    g = build('''
+        def f(out, items):
+            for it in items:
+                if it:
+                    out.append(it)
+                else:
+                    out.append(None)
+    ''', "f")
+    found = find_input_mutation(g)
+    assert len(found) == 1
+    assert "2 sites" in found[0].title
+    assert "procedure-style" in found[0].detail   # returns nothing
+
+
+def test_mixed_contract_notes_return_value():
+    g = build('''
+        def f(acc, x):
+            acc.append(x)
+            return len(acc)
+    ''', "f")
+    found = find_input_mutation(g)
+    assert len(found) == 1
+    assert "also returns a value" in found[0].detail
+
+
+def test_api_object_receivers_not_flagged():
+    # `db.add(...)` looks like set/list mutation, but a receiver that also
+    # gets non-container methods (`commit`, `execute`) is a service object —
+    # its add/update are API calls, not container writes (seeker-dev's db
+    # session produced a dozen such false positives).
+    g = build('''
+        def f(db, node):
+            db.add(node)
+            db.update(node)
+            db.commit()
+            return node
+    ''', "f")
+    assert find_input_mutation(g) == []
+
+
+def test_real_container_still_flagged_alongside_api_object():
+    g = build('''
+        def f(db, out, node):
+            db.add(node)
+            db.commit()
+            out.append(node)
+    ''', "f")
+    found = find_input_mutation(g)
+    assert len(found) == 1 and "`out`" in found[0].title
+
+
 def test_all_findings_are_heuristic_may():
     g = build('''
         def f(p):

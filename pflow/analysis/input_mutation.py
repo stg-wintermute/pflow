@@ -50,6 +50,12 @@ _MUTATORS = frozenset({
     "__setitem__", "__delitem__",
 })
 
+# The full method surface of the builtin containers: a receiver that gets
+# called with anything OUTSIDE this set is not a plain container.
+_CONTAINER_METHODS = frozenset(
+    m for t in (dict, list, set, frozenset, tuple, str, bytes, bytearray)
+    for m in dir(t) if not m.startswith("_"))
+
 
 def _args_op(graph: FunctionGraph):
     if not graph.blocks:
@@ -103,7 +109,11 @@ def find_input_mutation(graph: FunctionGraph) -> List[Opportunity]:
             return False
         return any(origin_def in u.reaching_defs for u in us)
 
-    found: List[Opportunity] = []
+    # One finding per (param, mutation kind), all sites merged. Emitting one
+    # finding per write site produced N identically-worded lines for one
+    # accumulator param (e.g. `out.append` in a recursive collector) — the
+    # duplication read as tool noise, not as N pieces of evidence.
+    groups: Dict[Tuple[str, str], dict] = {}
     seen: Set[Tuple[int, str, str]] = set()
 
     def emit(op, root: str, label: str, kind: str, verb: str) -> None:
@@ -113,14 +123,23 @@ def find_input_mutation(graph: FunctionGraph) -> List[Opportunity]:
         if key in seen:
             return
         seen.add(key)
-        found.append(Opportunity(
-            pass_name="input-mutation", kind=kind,
-            title=f"mutates parameter `{root}` in place — {verb} `{label}`",
-            ref=f"{graph.qualname}:op:{op.id}", op_id=op.id,
-            block_id=block_of.get(op.id, graph.entry), line=op_line.get(op.id),
-            modality="may", soundness="heuristic",
-            detail="intentional in-place API? otherwise return a new value "
-                   "instead of writing through the caller's argument"))
+        slot = groups.setdefault((root, kind), {"verb": verb, "sites": []})
+        slot["sites"].append((op, label, op_line.get(op.id)))
+
+    # Receiver-kind evidence: `.add()`/`.update()` only signal CONTAINER
+    # mutation if the receiver is a container. A param that also receives
+    # non-container methods (`db.commit()`, `db.execute()`, `db.get(Node,...)`)
+    # is a service/handle object whose mutating-looking methods are just its
+    # API — seeker-dev's `db` session produced a dozen such false positives.
+    api_like: Set[str] = set()
+    for op in graph.iter_ops():
+        for call in op.attrs.get("calls", ()):
+            func = call.get("func")
+            if func and "." in func:
+                base, method = func.rsplit(".", 1)
+                root = base.split(".", 1)[0]
+                if root in params and method not in _CONTAINER_METHODS:
+                    api_like.add(root)
 
     for op in graph.iter_ops():
         # (a) attribute store: target like `p.name` (root is a param).
@@ -134,14 +153,42 @@ def find_input_mutation(graph: FunctionGraph) -> List[Opportunity]:
             verb = "deletes from" if op.kind == "delete" else "writes"
             emit(op, root, f"{base_path}[...]", kind, verb)
 
-        # (c) mutating method call: `p.append(...)`, `p.update(...)`.
+        # (c) mutating method call: `p.append(...)`, `p.update(...)` — only on
+        # receivers that look like plain containers (see api_like above).
         for call in op.attrs.get("calls", ()):
             func = call.get("func")
             if not func or "." not in func:
                 continue
             base_path, method = func.rsplit(".", 1)
-            if method in _MUTATORS:
-                emit(op, base_path.split(".", 1)[0], f"{base_path}.{method}()",
+            root = base_path.split(".", 1)[0]
+            if method in _MUTATORS and root not in api_like:
+                emit(op, root, f"{base_path}.{method}()",
                      "method-mutation", "calls")
 
+    # Contract discriminator: a function that mutates a param AND returns a
+    # value has a mixed contract (the suspicious shape); one that returns
+    # nothing is likely an intentional in-place procedure.
+    returns_value = any(op.kind == "return" and op.uses for op in graph.iter_ops())
+
+    found: List[Opportunity] = []
+    for (root, kind), slot in groups.items():
+        sites = sorted(slot["sites"], key=lambda s: s[0].id)
+        first_op, first_label, first_line = sites[0]
+        if len(sites) == 1:
+            what = f"{slot['verb']} `{first_label}`"
+        else:
+            where = ", ".join(f"`{lb}`@{ln}" if ln else f"`{lb}`"
+                              for _, lb, ln in sites[:4])
+            what = f"{len(sites)} sites: {where}" + (" …" if len(sites) > 4 else "")
+        detail = ("also returns a value — mixed contract; consider returning "
+                  "the new value instead of writing through the caller's argument"
+                  if returns_value else
+                  "returns nothing (procedure-style) — in-place mutation is "
+                  "likely the contract; confirm callers expect it")
+        found.append(Opportunity(
+            pass_name="input-mutation", kind=kind,
+            title=f"mutates parameter `{root}` in place — {what}",
+            ref=f"{graph.qualname}:op:{first_op.id}", op_id=first_op.id,
+            block_id=block_of.get(first_op.id, graph.entry), line=first_line,
+            modality="may", soundness="heuristic", detail=detail))
     return found

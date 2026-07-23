@@ -68,7 +68,7 @@ def format_cfg_agent(g: FunctionGraph, include_dataflow: bool = True, include_do
         if b.ops:
             op_strs = []
             for op in b.ops:
-                s = op.kind
+                s = f"{op.id}:{op.kind}"      # id first: every op addressable as :op:N
                 if op.targets:
                     s += f"→{','.join(op.targets)}"
                 if op.uses:
@@ -152,7 +152,25 @@ def format_report_agent(g: FunctionGraph) -> str:
     lines.append(f"  {'entry':<9}bb{g.entry}")
 
     if g.exit_blocks:
-        lines.append(f"  {'exits':<9}{bbs(g.exit_blocks)} ({len(g.exit_blocks)})")
+        # split by exit kind: with many exits (validators, dispatchers) the
+        # question is always "which are the error paths vs the real returns"
+        by_id = {b.id: b for b in g.blocks}
+        rets, raises, falls = [], [], []
+        for bid in g.exit_blocks:
+            ops = by_id[bid].ops if bid in by_id else ()
+            last = ops[-1] if ops else None
+            (rets if last is not None and last.kind == "return" else
+             raises if last is not None and last.kind == "raise" else
+             falls).append(bid)
+        parts = []
+        if rets:
+            parts.append("return: " + bbs(rets))
+        if raises:
+            tail = f" (+{len(raises) - 8})" if len(raises) > 8 else ""
+            parts.append("raise: " + bbs(raises[:8]) + tail)
+        if falls:
+            parts.append("fall-off: " + bbs(falls))
+        lines.append(f"  {'exits':<9}({len(g.exit_blocks)})  " + " · ".join(parts))
 
     branch_blocks = [b for b in g.blocks if any(o.kind == "branch" for o in b.ops)]
     if branch_blocks:
@@ -176,6 +194,36 @@ def format_report_agent(g: FunctionGraph) -> str:
         tail = f" +{len(spine) - 10}" if len(spine) > 10 else ""
         lines.append(f"  {'spine':<9}{bbs(spine[:10])}{tail}   (pdom of entry)")
 
+    # state footprint: the self.*/global surface this function touches — the
+    # part of its behavior invisible to its signature. `self.m(...)` roots are
+    # method calls, not attribute reads: exclude them from reads, and count
+    # only DEEP call paths (`self.attr.m()`) as possible mutation of attr.
+    called_roots = {(c.get("func") or "").split(".")[1]
+                    for op in g.iter_ops() for c in op.attrs.get("calls", ())
+                    if (c.get("func") or "").startswith("self.")}
+    sreads = sorted({u.split(".")[1] for op in g.iter_ops() for u in op.uses
+                     if u.startswith("self.") and u.count(".") >= 1}
+                    - called_roots)
+    swrites = sorted({t.split(".")[1] for op in g.iter_ops() for t in op.targets
+                      if t.startswith("self.")})
+    scalls = sorted({c["func"].split(".")[1]
+                     for op in g.iter_ops() for c in op.attrs.get("calls", ())
+                     if (c.get("func") or "").startswith("self.")
+                     and c["func"].count(".") >= 2})
+    if sreads or swrites or scalls:
+        bits = []
+        if swrites:
+            bits.append("writes self." + ",".join(swrites[:6])
+                        + (f" (+{len(swrites) - 6})" if len(swrites) > 6 else ""))
+        if scalls:
+            bits.append("mutates? self." + ",".join(scalls[:5])
+                        + (f" (+{len(scalls) - 5})" if len(scalls) > 5 else ""))
+        reads_only = [r for r in sreads if r not in swrites]
+        if reads_only:
+            bits.append("reads self." + ",".join(reads_only[:8])
+                        + (f" (+{len(reads_only) - 8})" if len(reads_only) > 8 else ""))
+        lines.append(f"  {'state':<9}" + " · ".join(bits))
+
     fan = []
     for d in g.defs:
         n = sum(1 for u in g.uses if d.id in u.reaching_defs)
@@ -188,7 +236,7 @@ def format_report_agent(g: FunctionGraph) -> str:
 
     pre = (path + ":") if path else ""
     targets, seen = [], set()
-    for d, n, ln in fan[:4]:
+    for d, _, ln in fan[:4]:
         ref = f"{pre}{g.qualname}:def:{d.name}@{ln}"
         if ref not in seen:
             seen.add(ref)
@@ -198,7 +246,127 @@ def format_report_agent(g: FunctionGraph) -> str:
         if ref not in seen:
             seen.add(ref)
             targets.append(ref)
+    # value-returning exits: slicing backward from these is the canonical
+    # "what does this function's result depend on"
+    for bid in rets[:2] if g.exit_blocks else ():
+        last = by_id[bid].ops[-1]
+        if last.uses:
+            ref = f"{pre}{g.qualname}:op:{last.id}"
+            if ref not in seen:
+                seen.add(ref)
+                targets.append(ref)
     if targets:
         lines.append("  targets →  " + "  ".join(targets))
 
+    return "\n".join(lines)
+
+
+def _fn_size(g: FunctionGraph):
+    """Cheap structural size for the program census: (blocks, branch blocks,
+    exits, longest def→use span). No dominators — must stay fast over hundreds
+    of functions."""
+    br = sum(1 for b in g.blocks if any(o.kind == "branch" for o in b.ops))
+    last_use = {}
+    for u in g.uses:
+        for d in u.reaching_defs:
+            last_use[d] = max(last_use.get(d, 0), u.op_id)
+    span = max((last_use[d.id] - d.op_id for d in g.defs if d.id in last_use),
+               default=0)
+    return len(g.blocks), br, len(g.exit_blocks), span
+
+
+def format_program_report_agent(pg) -> str:
+    """Whole-program positional census — the front door for 'review this repo'.
+
+    Same contract as the per-function report: coordinates and connections, no
+    verdicts. Aggregates the three interprocedural views (callgraph, state,
+    per-function structure) into one orientation screen and ends with
+    `targets →` — runnable file:qualname handles for the per-function IR
+    commands (report/cfg/slice/walk). Judgments live in `opportunities`.
+    """
+    from ..analysis.interproc import program_callgraph, entrypoints, hubs, cycles, state_rows
+
+    cg = program_callgraph(pg)
+    n_edges = sum(len(v) for v in cg.edges.values())
+    import os
+    name = os.path.basename(pg.root.rstrip(os.sep)) if pg.out_of_tree else pg.display_root()
+    lines = [f"PROGRAM census: {name}  ·  {len(pg.modules)} files · "
+             f"{len(pg.functions)} fn · {n_edges} call edges · "
+             f"{len(pg.errors)} parse error(s)"]
+    if pg.out_of_tree:
+        # rows below use in-root relpaths; this line carries the prefix once
+        lines.append(f"  {'root':<9}{pg.root}")
+
+    def disp(fq: str) -> str:
+        if pg.out_of_tree:
+            return fq
+        relpath, qual = fq.split(":", 1)
+        return f"{pg.display_path(relpath)}:{qual}"
+
+    def runnable(fq: str) -> str:
+        relpath, qual = fq.split(":", 1)
+        return f"{pg.display_path(relpath)}:{qual}"
+
+    hub_rows = [(fq, fi, fo) for fq, fi, fo in hubs(cg, 8) if fi or fo]
+    if hub_rows:
+        def hub_cell(fq, fi, fo):
+            callers = cg.rev.get(fq, ())
+            smeared = sum(1 for c in callers if cg.ambiguity.get((c, fq), 1) > 1)
+            mark = "~" if fi and smeared * 2 >= fi else ""
+            return f"{fi}{mark}←{fo}→ {disp(fq)}"
+        cells = " · ".join(hub_cell(fq, fi, fo) for fq, fi, fo in hub_rows[:6])
+        note = ("   (~ = fan-in mostly name-resolution smear)"
+                if "~←" in cells else "")
+        lines.append(f"  {'hubs':<9}{cells}{note}")
+
+    cy = cycles(cg)
+    if cy:
+        from ..analysis.interproc import cycle_is_smeared
+        labels = []
+        for c in cy[:5]:
+            names = [x.split(":")[-1] for x in c]
+            mark = "~" if cycle_is_smeared(cg, c) else ""
+            labels.append(("recursive: " + names[0] if len(c) == 1
+                           else " ↔ ".join(names[:4])) + mark)
+        tail = f" (+{len(cy) - 5})" if len(cy) > 5 else ""
+        lines.append(f"  {'cycles':<9}({len(cy)})  " + " · ".join(labels) + tail)
+
+    rows = state_rows(pg)
+    flagged = [c for c in rows if c.flags]
+    if rows:
+        cells = " · ".join(f"{c.name} W{len(c.writers)}/R{len(c.readers)} "
+                           f"[{','.join(c.flags)}]" for c in flagged[:3])
+        line = f"  {'state':<9}{len(rows)} cells · {len(flagged)} flagged"
+        if cells:
+            line += "   " + cells
+        lines.append(line)
+
+    eps = entrypoints(cg)
+    if eps:
+        shown = " · ".join(e.split(":")[-1] for e in eps[:8])
+        tail = f" (+{len(eps) - 8})" if len(eps) > 8 else ""
+        lines.append(f"  {'entry':<9}({len(eps)} uncalled in-program)  {shown}{tail}")
+
+    sized = sorted(((fq, *_fn_size(g)) for fq, g in pg.functions.items()),
+                   key=lambda r: r[1], reverse=True)
+    cap = len(sized) if len(sized) <= 20 else 12
+    if sized:
+        lines.append(f"  {'largest':<9}(top {cap} of {len(sized)} fn:  bb · branch · exit · span)")
+        for fq, bb, br, ex, span in sized[:cap]:
+            lines.append(f"    {disp(fq):<58} {bb:>3} · {br:>2} · {ex:>2} · {span:>3}")
+
+    targets, seen = [], set()
+    cap = 3 if pg.out_of_tree else 5           # absolute paths are long
+    for fq, *_ in sized[:3]:
+        t = runnable(fq)
+        if t not in seen:
+            seen.add(t)
+            targets.append(t)
+    for fq, _, _ in hub_rows[:2]:
+        t = runnable(fq)
+        if t not in seen:
+            seen.add(t)
+            targets.append(t)
+    if targets:
+        lines.append("  targets →  " + "  ".join(targets[:cap]))
     return "\n".join(lines)

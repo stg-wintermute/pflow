@@ -27,9 +27,10 @@ class Opportunity:
     soundness: str          # 'sound' | 'heuristic'
     detail: str = ""
 
-    def render(self) -> str:
+    def render(self, path: str = "") -> str:
         tag = f"[{self.soundness}/{self.modality}]"
-        loc = f"  {self.ref}" if self.ref else ""
+        ref = full_ref(self, path)
+        loc = f"  ref {ref}" if ref else ""
         extra = f"  — {self.detail}" if self.detail else ""
         return f"{tag} {self.pass_name}: {self.title}{loc}{extra}"
 
@@ -49,6 +50,7 @@ PASS_CATALOG: List[tuple] = [
     ("dead-store",       "assignments never read before overwrite/exit"),
     ("complexity",       "cyclomatic / cognitive / nesting hotspots"),
     ("decomposition",    "functions splittable along output slices"),
+    ("scope-coupling",   "closures that capture many enclosing locals (hidden fan-in)"),
     ("lossy-projection", "open record narrowed to a closed dict (a key is dropped)"),
     ("input-mutation",   "function mutates a parameter in place (writes through the caller's argument)"),
 ]
@@ -67,6 +69,7 @@ def _registry():
     from .liveness import find_dead_stores
     from .complexity import find_complexity_hotspots
     from .decomposition import find_decomposition
+    from .scope_coupling import find_scope_coupling
     from .projection import find_lossy_projection
     from .input_mutation import find_input_mutation
     fns = {
@@ -77,6 +80,7 @@ def _registry():
         "dead-store": find_dead_stores,
         "complexity": find_complexity_hotspots,
         "decomposition": find_decomposition,
+        "scope-coupling": find_scope_coupling,
         "lossy-projection": find_lossy_projection,
         "input-mutation": find_input_mutation,
     }
@@ -107,20 +111,119 @@ def run_passes_grouped(graph: FunctionGraph, only=None) -> List[tuple]:
     return [(name, _sort(by_name[name](graph))) for name in sel if name in by_name]
 
 
-def format_opportunities(graph: FunctionGraph, opps: List[Opportunity]) -> str:
+_PRAGMA = None  # compiled lazily; module must import without `re` cost
+
+
+def filter_suppressed(opps: List[Opportunity], source_lines: List[str]):
+    """Drop findings whose source line carries `# pflow: ok` (all passes) or
+    `# pflow: ok(pass-name[, pass-name])` (those passes only). Returns
+    (kept, n_suppressed). Accepted heuristics stop re-firing on every run —
+    without this, agents re-read the same known-intentional findings forever."""
+    global _PRAGMA
+    if _PRAGMA is None:
+        import re
+        _PRAGMA = re.compile(r"pflow:\s*ok(?:\(([^)]*)\))?")
+    kept: List[Opportunity] = []
+    n = 0
+    for o in opps:
+        if o.line and 1 <= o.line <= len(source_lines):
+            m = _PRAGMA.search(source_lines[o.line - 1])
+            if m and (not m.group(1)
+                      or o.pass_name in {s.strip() for s in m.group(1).split(",")}):
+                n += 1
+                continue
+        kept.append(o)
+    return kept, n
+
+
+def full_ref(o: Opportunity, path: str = "") -> str:
+    """File-qualified, runnable ref: `path:qualname:def:x@42`. Refs emitted by
+    passes start at the qualname; without the path prefix they cannot be fed
+    back into walk/slice/show — which silently broke the confirm-by-walking
+    loop everywhere the path was dropped."""
+    return f"{path}:{o.ref}" if path and o.ref else o.ref
+
+
+# Per-pass verification commands — the exact IR-layer invocation that shows the
+# structure behind a finding. Rendered with every finding: a verdict an agent
+# can check in one command is trusted; one it can't is dismissed.
+_VERIFY = {
+    "unreachable":      lambda t, r: f"pflow cfg {t} -a" if t else None,
+    "redundant-branch": lambda t, r: f"pflow slice --from '{r}' --backward",
+    "const-branch":     lambda t, r: f"pflow slice --from '{r}' --backward",
+    "use-before-def":   lambda t, r: f"pflow slice --from '{r}' --backward",
+    "lossy-projection": lambda t, r: f"pflow slice --from '{r}' --backward",
+    "dead-store":       lambda t, r: f"pflow walk --from '{r}' --edges data --direction forward",
+    "scope-coupling":   lambda t, r: f"pflow walk --from '{r}' --edges data --direction forward",
+    "input-mutation":   lambda t, r: f"pflow show '{r}'",
+    "complexity":       lambda t, r: f"pflow report {t}" if t else None,
+    "decomposition":    lambda t, r: f"pflow report {t}" if t else None,
+}
+
+
+def verify_hint(o: Opportunity, target: str = "", path: str = "") -> Optional[str]:
+    fn = _VERIFY.get(o.pass_name)
+    if fn is None:
+        return None
+    r = full_ref(o, path)
+    return fn(target, r) if r else None
+
+
+def _path_and_target(graph: FunctionGraph, target: str = ""):
+    """(file path, file:qualname target) for building runnable refs/hints."""
+    if target and not target.startswith("live:") and ":" in target:
+        return target.rsplit(":", 1)[0], target
+    path = graph.source_path or ""
+    return path, (f"{path}:{graph.qualname}" if path else "")
+
+
+_SECTION = {"sound": "sound (holds by construction):",
+            "heuristic": "heuristic (hypotheses — confirm against source):"}
+
+
+def _render_ranked(opps: List[Opportunity], path: str, target: str,
+                   indent: str = "  ") -> List[str]:
+    """Ranked findings with soundness section headers + verify hints."""
+    lines: List[str] = []
+    current = None
+    for o in opps:
+        if o.soundness != current:
+            current = o.soundness
+            lines.append(f"{indent}{_SECTION.get(current, current + ':')}")
+        lines.append(f"{indent}  {o.render(path)}")
+        hint = verify_hint(o, target, path)
+        if hint:
+            lines.append(f"{indent}      verify → {hint}")
+    return lines
+
+
+def format_opportunities(graph: FunctionGraph, opps: List[Opportunity],
+                         target: str = "") -> str:
+    path, tgt = _path_and_target(graph, target)
     if not opps:
-        return f"{graph.qualname}: no opportunities found"
-    lines = [f"{graph.qualname}: {len(opps)} opportunity(ies)"]
-    lines += ["  " + o.render() for o in opps]
+        walk_to = tgt or graph.qualname
+        return (f"{graph.qualname}: no findings — the passes are a cross-check, "
+                f"not the review; walk the graph: pflow report {walk_to}")
+    n_sound = sum(1 for o in opps if o.soundness == "sound")
+    lines = [f"{graph.qualname}: {len(opps)} finding(s) "
+             f"({n_sound} sound · {len(opps) - n_sound} heuristic) — "
+             f"cross-check layer: confirm each ref in the graph before acting"]
+    lines += _render_ranked(opps, path, tgt)
     return "\n".join(lines)
 
 
-def format_grouped(graph: FunctionGraph, groups: List[tuple]) -> str:
+def format_grouped(graph: FunctionGraph, groups: List[tuple],
+                   target: str = "") -> str:
     """Per-pass sections: one header per pass, its findings beneath it."""
+    path, tgt = _path_and_target(graph, target)
     total = sum(len(f) for _, f in groups)
     lines = [f"{graph.qualname}: {total} finding(s) across {len(groups)} pass(es)"]
     for name, findings in groups:
         lines.append(f"  [{name}] {len(findings)} finding(s)" if findings
                      else f"  [{name}] none")
-        lines += ["    " + o.render() for o in findings]
+        for o in findings:
+            lines.append("    " + o.render(path))
+            hint = verify_hint(o, tgt, path)
+            if hint:
+                lines.append(f"        verify → {hint}")
     return "\n".join(lines)

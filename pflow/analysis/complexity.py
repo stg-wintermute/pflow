@@ -30,6 +30,9 @@ THRESHOLDS = {"cyclomatic": 12, "cognitive": 25, "max_nesting": 4, "max_live_spa
 
 
 def compute_metrics(graph: FunctionGraph) -> Dict[str, int]:
+    cached = graph.attrs.get("_metrics")
+    if cached is not None:
+        return cached
     blocks = graph.blocks
     n = len(blocks)
     bb = {b.id: b for b in blocks}
@@ -76,35 +79,66 @@ def compute_metrics(graph: FunctionGraph) -> Dict[str, int]:
         if use_ops:
             max_span = max(max_span, max(use_ops) - d.op_id)
 
-    return {
+    graph.attrs["_metrics"] = {
         "blocks": n, "control_edges": out_edges, "branches": len(branch_blocks),
         "cyclomatic": cyclomatic, "cognitive": cognitive, "max_nesting": max_nesting,
         "depdegree": depdegree, "max_live_span": max_span,
         "defs": len(graph.defs), "uses": len(graph.uses), "exits": len(graph.exit_blocks),
     }
+    return graph.attrs["_metrics"]
+
+
+def program_percentiles(functions) -> Dict[str, "callable"]:
+    """{metric: value -> percentile} over every function in the program.
+    Gives complexity findings a relative footing: `cyclomatic 16` means little
+    in the abstract, `p97 in this program` is a defensible outlier claim."""
+    import bisect
+    dists: Dict[str, List[int]] = {k: [] for k in THRESHOLDS}
+    for g in functions.values():
+        m = compute_metrics(g)
+        for k in dists:
+            dists[k].append(m[k])
+    for k in dists:
+        dists[k].sort()
+
+    def make(k):
+        vals = dists[k]
+        def pct(v: int) -> int:
+            if not vals:
+                return 0
+            return round(100 * bisect.bisect_left(vals, v) / len(vals))
+        return pct
+    return {k: make(k) for k in dists}
 
 
 def find_complexity_hotspots(graph: FunctionGraph) -> List[Opportunity]:
+    """ONE finding per function, however many thresholds it crosses. The four
+    measures describe the same structural mass; emitting them separately
+    triple-counted every hotspot and drowned the merged ranking in near-
+    duplicate lines (the main 'excessive' complaint from dogfooding agents)."""
     m = compute_metrics(graph)
-    out: List[Opportunity] = []
-    labels = {"cyclomatic": "cyclomatic complexity",
-              "cognitive": "cognitive complexity",
-              "max_nesting": "max branch nesting",
-              "max_live_span": "live-variable span"}
+    over = [(k, m[k], thr) for k, thr in THRESHOLDS.items() if m[k] > thr]
+    if not over:
+        return []
+    short = {"cyclomatic": "cyclomatic", "cognitive": "cognitive",
+             "max_nesting": "nesting", "max_live_span": "live-span"}
+    measures = " · ".join(f"{short[k]} {v} (>{thr})" for k, v, thr in over)
+    # The branch/value split is the actionable part: branch mass alone is often
+    # intrinsic (dispatch, parsers); long live spans are the decomposition signal.
+    span_over = any(k == "max_live_span" for k, _, _ in over)
+    branch_over = any(k != "max_live_span" for k, _, _ in over)
+    if span_over and branch_over:
+        reading = "branch-heavy and value-heavy — strongest split signal"
+    elif span_over:
+        reading = "value-heavy (long live spans); branching is within bounds"
+    else:
+        reading = "branch-heavy; may be intrinsic (dispatch/parser) — check live-span before splitting"
     ctx = (f"cyclomatic={m['cyclomatic']} cognitive={m['cognitive']} "
            f"nesting={m['max_nesting']} depdegree={m['depdegree']} "
            f"live_span={m['max_live_span']}")
-    for key, thr in THRESHOLDS.items():
-        if m[key] > thr:
-            if key == "max_live_span":
-                title = (f"live-variable span is {m[key]} (> {thr}) — juggles many "
-                         f"values at once; candidate for decomposition")
-            else:
-                title = (f"{labels[key]} is {m[key]} (> {thr}) — high branch "
-                         f"complexity (may be intrinsic; check live_span)")
-            out.append(Opportunity(
-                pass_name="complexity", kind=f"high_{key}", title=title,
-                ref=f"{graph.qualname}:bb:{graph.entry}", op_id=-1,
-                block_id=graph.entry, line=graph.first_line,
-                modality="may", soundness="heuristic", detail=ctx))
-    return out
+    return [Opportunity(
+        pass_name="complexity", kind="hotspot",
+        title=f"{measures} — {reading}",
+        ref=f"{graph.qualname}:bb:{graph.entry}", op_id=-1,
+        block_id=graph.entry, line=graph.first_line,
+        modality="may", soundness="heuristic", detail=ctx)]

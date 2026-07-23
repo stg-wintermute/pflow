@@ -85,6 +85,7 @@ def find_lossy_projection(graph: FunctionGraph) -> List[Opportunity]:
 
     op_line = {op.id: (op.source[0] if op.source else None) for op in graph.iter_ops()}
     block_of = {op.id: b.id for b in graph.blocks for op in b.ops}
+    fn_raises = any(op.kind == "raise" for op in graph.iter_ops())
 
     strong: List[Opportunity] = []
     hints: List[Opportunity] = []
@@ -123,12 +124,23 @@ def find_lossy_projection(graph: FunctionGraph) -> List[Opportunity]:
                 detail=f'source it from the input (e.g. input.get("{key}")) or carry it through'))
 
         # hint: closed projection of an open record (>=2 keys), no carry-rest.
+        # Suppressed when the function raises: a raising narrower is a
+        # VALIDATOR — closing the record is its contract, not an accident
+        # (10 of 14 seeker-dev hits were validators/parsers). And the wording
+        # is a position statement, not advice: for wire-shape projectors,
+        # `{**input, ...}` would be the bug (leaking internal fields).
         if (op.kind == "return" and not db.get("has_spread") and not db.get("dynamic")
+                and not fn_raises
                 and any(len(reads[p]) >= 2 for p in record_params)):
+            n_out = len(db.get("keys", ()))
+            n_read = max(len(reads[p]) for p in record_params)
             hints.append(Opportunity(
                 pass_name="lossy-projection", kind="closed-projection",
-                title="closed reconstruction of an open input — keys not enumerated "
-                      "here are dropped; use `{**input, ...}` to preserve them",
+                title=f"returns a closed {n_out}-key dict built from an open "
+                      f"input ({n_read} keys read) — anything else on the input "
+                      f"is dropped here",
                 ref=ref, op_id=op.id, block_id=bid, line=ln,
-                modality="may", soundness="heuristic"))
+                modality="may", soundness="heuristic",
+                detail="deliberate projection (wire shape/summary) or accidental "
+                       "narrowing? check what callers put on the input"))
     return strong + hints  # strong findings ranked before weak hints

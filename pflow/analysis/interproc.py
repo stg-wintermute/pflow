@@ -26,6 +26,16 @@ class CallGraph:
     edges: Dict[str, Set[str]]          # fqname -> callees (in-program)
     rev: Dict[str, Set[str]]            # fqname -> callers
     unresolved: Dict[str, int]          # fqname -> count of calls that resolved to nothing
+    # (caller, callee) -> how many candidates the resolving call name fanned
+    # out to. 1 = sharp (import/self/same-module match); >1 = simple-name smear
+    # (`obj.method()` matching every same-named method). Rendered as `~k` so an
+    # agent can tell load-bearing edges from artifacts of name-based resolution.
+    ambiguity: Dict[Tuple[str, str], int] = field(default_factory=dict)
+    # higher-order edges: the callee was PASSED as an argument, not called by
+    # name (`_validated(validate_service_payload, payload)`). Without these,
+    # every helper-mediated call path is invisible (seeker's production
+    # routes to its validators only existed through tests).
+    via_arg: Set[Tuple[str, str]] = field(default_factory=set)
 
     def fan_in(self, fq: str) -> int:
         return len(self.rev.get(fq, ()))
@@ -33,22 +43,123 @@ class CallGraph:
     def fan_out(self, fq: str) -> int:
         return len(self.edges.get(fq, ()))
 
+    def edge_mark(self, caller: str, callee: str) -> str:
+        k = self.ambiguity.get((caller, callee), 1)
+        return f"~{k}" if k > 1 else ""
+
 
 def program_callgraph(pg: ProgramGraph) -> CallGraph:
+    """Build (or fetch) the program call graph. Memoized on the ProgramGraph
+    and persisted beside the program cache keyed by its file digest — at vllm
+    scale the edge resolution costs ~60s, which every interprocedural command
+    (at --in, raises, impact, callgraph, census) was paying per invocation."""
+    memo = getattr(pg, "_cg_memo", None)
+    if memo is not None:
+        return memo
+    cg = _load_cg_cache(pg) if pg.cache_enabled else None
+    if cg is None:
+        cg = _build_callgraph(pg)
+        if pg.cache_enabled:
+            _save_cg_cache(pg, cg)
+    pg._cg_memo = cg
+    return cg
+
+
+def _cg_cache_path(pg: ProgramGraph) -> str:
+    from .program import _cache_path
+    return _cache_path(pg.root) + ".cg"
+
+
+def _load_cg_cache(pg: ProgramGraph) -> Optional[CallGraph]:
+    import pickle
+    try:
+        with open(_cg_cache_path(pg), "rb") as f:
+            blob = pickle.load(f)
+        if blob.get("digest") == pg.cache_digest:
+            return blob["cg"]
+    except Exception:
+        pass
+    return None
+
+
+def _save_cg_cache(pg: ProgramGraph, cg: CallGraph) -> None:
+    import pickle
+    try:
+        with open(_cg_cache_path(pg), "wb") as f:
+            pickle.dump({"digest": pg.cache_digest, "cg": cg}, f,
+                        protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception as e:  # noqa: BLE001
+        import sys
+        print(f"pflow: callgraph cache not saved ({type(e).__name__})",
+              file=sys.stderr)
+
+
+def _build_callgraph(pg: ProgramGraph) -> CallGraph:
     edges: Dict[str, Set[str]] = {fq: set() for fq in pg.functions}
     rev: Dict[str, Set[str]] = {fq: set() for fq in pg.functions}
     unresolved: Dict[str, int] = {}
-    for fq in pg.functions:
-        for name in pg.calls_of(fq):
-            targets = pg.resolve_call(fq, name)
-            if not targets:
-                unresolved[fq] = unresolved.get(fq, 0) + 1
-                continue
-            for t in targets:
-                if t in edges:
-                    edges[fq].add(t)
-                    rev[t].add(fq)
-    return CallGraph(edges=edges, rev=rev, unresolved=unresolved)
+    ambiguity: Dict[Tuple[str, str], int] = {}
+    via_arg: Set[Tuple[str, str]] = set()
+
+    def add(fq: str, targets, is_arg: bool) -> None:
+        k = len(targets)
+        for t in targets:
+            if t in edges:
+                edges[fq].add(t)
+                rev[t].add(fq)
+                key = (fq, t)
+                # keep the SHARPEST evidence: one unambiguous call site
+                # outweighs any number of smeared ones.
+                ambiguity[key] = min(ambiguity.get(key, k), k)
+                if is_arg:
+                    via_arg.add(key)
+
+    for fq, g in pg.functions.items():
+        local_names = {d.name for d in g.defs}
+        for op in g.iter_ops():
+            for c in op.attrs.get("calls", ()):
+                name = c.get("func")
+                if name:
+                    targets = pg.resolve_call(fq, name)
+                    if targets:
+                        add(fq, targets, is_arg=False)
+                    else:
+                        unresolved[fq] = unresolved.get(fq, 0) + 1
+                # address-taken: a BARE name passed as an argument that
+                # resolves sharply to an in-program function is a potential
+                # call-through (k<=2 — smear would fabricate edges; local
+                # variables are values, not function references)
+                for a in c.get("args", ()):
+                    if a and "." not in a and a not in local_names:
+                        targets = pg.resolve_call(fq, a)
+                        if targets and len(targets) <= 2:
+                            add(fq, targets, is_arg=True)
+    return CallGraph(edges=edges, rev=rev, unresolved=unresolved,
+                     ambiguity=ambiguity, via_arg=via_arg)
+
+
+def call_paths(cg: CallGraph, to: str, origin: Optional[str] = None,
+               max_depth: int = 8, max_paths: int = 10) -> List[List[str]]:
+    """Call chains that can reach `to` — the "how does execution get here"
+    debugging question. Walks caller edges backward from `to`; a chain ends at
+    `origin` (if given) or at any entrypoint (no in-program callers). BFS, so
+    shortest chains come first; cycles are not re-entered within one chain."""
+    roots = set(entrypoints(cg)) if origin is None else {origin}
+    out: List[List[str]] = []
+    from collections import deque
+    q = deque([[to]])
+    while q and len(out) < max_paths:
+        chain = q.popleft()
+        head = chain[0]
+        if (head in roots and len(chain) > 1) or (origin is None and not cg.rev.get(head)):
+            out.append(chain)
+            continue
+        if len(chain) > max_depth:
+            continue
+        for caller in sorted(cg.rev.get(head, ())):
+            if caller not in chain:            # no cycle re-entry
+                q.append([caller] + chain)
+    return out
 
 
 def entrypoints(cg: CallGraph) -> List[str]:
@@ -109,8 +220,20 @@ def cycles(cg: CallGraph) -> List[List[str]]:
         sys.setrecursionlimit(old)
 
     out = [c for c in sccs if len(c) > 1]
-    out += [[v] for v in cg.edges if v in cg.edges.get(v, ())]  # self-recursion
+    # self-recursion: only via a SHARP self-edge. A smeared one (`self._client
+    # .create()` inside Sandbox.create matching its own name) is a resolution
+    # artifact, not recursion.
+    out += [[v] for v in cg.edges
+            if v in cg.edges.get(v, ()) and cg.ambiguity.get((v, v), 1) == 1]
     return out
+
+
+def cycle_is_smeared(cg: CallGraph, comp: List[str]) -> bool:
+    """True when every closing edge of the cycle is ambiguous (~k>1) — the
+    'cycle' may exist only in name-resolution space."""
+    members = set(comp)
+    internal = [(a, b) for a in comp for b in cg.edges.get(a, ()) if b in members]
+    return bool(internal) and all(cg.ambiguity.get(e, 1) > 1 for e in internal)
 
 
 def layers(cg: CallGraph, roots: Optional[List[str]] = None) -> Dict[str, int]:

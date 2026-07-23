@@ -110,6 +110,36 @@ def test_report_is_positional_census(capsys, sample):
         assert verdict not in low, f"report leaked a conclusion: {verdict!r}"
 
 
+def test_report_file_is_program_census(capsys, sample):
+    # a bare file (or directory) target must produce the whole-program census,
+    # not an error — this is the front door for "review this repo".
+    code, out, _ = run(capsys, "report", str(sample), "--no-cache")
+    assert code == 0
+    assert "PROGRAM census" in out
+    assert "largest" in out
+    assert "targets →" in out
+    assert "step" in out
+
+
+def test_bare_file_error_points_at_report(capsys, sample):
+    # per-function commands on a whole file must redirect to the census.
+    code, _, err = run(capsys, "cfg", str(sample))
+    assert code == 2
+    assert "pflow report" in err
+
+
+def test_program_opportunities_have_runnable_refs(capsys, sample):
+    code, out, _ = run(capsys, "opportunities", str(sample), "--no-cache")
+    assert code == 0
+    assert "PROGRAM opportunities" in out
+    # every finding must carry a file-qualified ref and a verify command,
+    # otherwise the confirm-by-walking loop is broken at program scale.
+    if "findings (0 sound · 0 heuristic)" not in out.replace("0 findings", ""):
+        for line in out.splitlines():
+            if line.strip().startswith("[") and "]" in line:
+                assert "ref " in line, f"finding without ref: {line!r}"
+
+
 def test_metrics_has_no_threshold_verdict(capsys, sample):
     # metrics is a positional measurement; the "(> N!)" hotspot judgment moved
     # to `opportunities`.

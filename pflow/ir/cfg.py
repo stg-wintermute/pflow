@@ -36,6 +36,9 @@ class _CFGBuilder:
         # the first function visited is the target; nested defs are just
         # name bindings, not control flow to recurse into (Bug A).
         self._top_done = False
+        # tallied by _extract_uses; lets `raises --implicit` know this
+        # function reads through subscripts (KeyError/IndexError sources)
+        self._subscript_loads = 0
 
     # -- block / op primitives -------------------------------------------
 
@@ -769,6 +772,11 @@ class _CFGBuilder:
             return ()
         out: List[str] = []
         self._collect_loads(node, set(), out)
+        # function-level tally only (no per-op precision needed): reads
+        # through a subscript are implicit KeyError/IndexError sources.
+        self._subscript_loads += sum(
+            1 for n in ast.walk(node)
+            if isinstance(n, ast.Subscript) and isinstance(n.ctx, ast.Load))
         return tuple(dict.fromkeys(out))
 
     def _collect_loads(self, node: ast.AST, bound: set, out: List[str]) -> None:
@@ -849,14 +857,21 @@ class _CFGBuilder:
         them as uses keeps closure-captured locals from looking dead (Bug A)."""
         bound: set = {node.name}
         loaded: set = set()
+        freeing: set = set()    # nonlocal/global declarations inside the def
         for n in ast.walk(node):
             if isinstance(n, ast.arg):
                 bound.add(n.arg)
             elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 bound.add(n.name)
+            elif isinstance(n, (ast.Nonlocal, ast.Global)):
+                freeing.update(n.names)
             elif isinstance(n, ast.Name):
                 (bound if isinstance(n.ctx, ast.Store) else loaded).add(n.id)
-        return tuple(loaded - bound)
+        # a `nonlocal x` name is a capture even when only assigned: Store ctx
+        # must not hide it from the enclosing scope (obol's `last_log_at`
+        # looked dead in the parent because the closure both declared it
+        # nonlocal and assigned it)
+        return tuple((loaded | freeing) - (bound - freeing))
 
     def _src(self, node: ast.AST) -> Optional[Tuple[int, int, int, int]]:
         lineno = getattr(node, "lineno", None)
@@ -902,11 +917,14 @@ class _CFGBuilder:
 
         all_ops = [op for blk in self.blocks for op in blk.ops]
         entry = self.blocks[0].id if self.blocks else 0
-        return FunctionGraph(
+        g = FunctionGraph(
             qualname=self.qualname, source_path=self.source_path,
             first_line=self.first_line, blocks=tuple(self.blocks),
             entry=entry, exit_blocks=tuple(exit_blocks), ops=tuple(all_ops),
         )
+        if self._subscript_loads:
+            g.attrs["subscript_loads"] = self._subscript_loads
+        return g
 
     def _prune_empty_blocks(self) -> None:
         """Collapse empty pass-through blocks (no ops, single normal succ,
@@ -962,7 +980,53 @@ def build_cfg_from_ast(
     first_line = getattr(func_node, "lineno", 1)
     builder = _CFGBuilder(qualname or func_node.name, source_path, first_line)
     builder.visit(func_node)
-    return builder.build()
+    g = builder.build()
+    nw = _nonlocal_writes(func_node)
+    if nw:
+        # names a nested def rebinds via `nonlocal`: any call in this
+        # function may flip them behind the dataflow's back (found as a
+        # const-prop false positive on a `stop` flag set by a signal handler
+        # closure). Constancy/implication passes must treat them as volatile.
+        g.attrs["nonlocal_writes"] = nw
+    own = _own_scope_decls(func_node)
+    if own["nonlocal"]:
+        # names THIS function declares nonlocal: stores write through to the
+        # enclosing scope, so they are never dead here.
+        g.attrs["nonlocal_decls"] = own["nonlocal"]
+    if own["global"]:
+        g.attrs.setdefault("global_decls", own["global"])
+    return g
+
+
+def _nonlocal_writes(func_node: ast.AST) -> frozenset:
+    """Names declared `nonlocal` anywhere inside nested defs of this function
+    (recursive — over-approximate on multi-level nesting, the safe side)."""
+    names: set = set()
+    for node in ast.walk(func_node):
+        if node is not func_node and isinstance(node, ast.Nonlocal):
+            names.update(node.names)
+    return frozenset(names)
+
+
+def _own_scope_decls(func_node: ast.AST) -> dict:
+    """`nonlocal`/`global` names declared DIRECTLY in this function (nested
+    defs own their declarations)."""
+    out = {"nonlocal": set(), "global": set()}
+
+    def walk(n: ast.AST) -> None:
+        for child in ast.iter_child_nodes(n):
+            if isinstance(child, ast.Nonlocal):
+                out["nonlocal"].update(child.names)
+            elif isinstance(child, ast.Global):
+                out["global"].update(child.names)
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                    ast.ClassDef)):
+                continue
+            else:
+                walk(child)
+
+    walk(func_node)
+    return out
 
 
 def _find_function(tree: ast.AST, qualname: str):

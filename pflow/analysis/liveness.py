@@ -22,7 +22,16 @@ from .opportunities import Opportunity
 
 
 def compute_liveness(graph: FunctionGraph) -> Tuple[Dict[int, Set[str]], Dict[int, Set[str]]]:
-    """Return (live_in, live_out): names live entering/leaving each block."""
+    """Return (live_in, live_out): names live entering/leaving each block.
+
+    Hand-rolled (not on the generic solver) because exceptional edges need a
+    split transfer: a block's KILLS apply only to liveness flowing in from its
+    NORMAL successors — on an exception path the block's assignments may never
+    have executed, so the pre-block value can still be read by the handler.
+    Merging both edge kinds killed uniformly and flagged the defensive-init
+    idiom (`x = None; try: x = fetch() except: pass; use(x)`) as a dead store
+    (found on obol's harbor reward parsing).
+    """
     use: Dict[int, Set[str]] = {}
     defs: Dict[int, Set[str]] = {}
     for blk in graph.blocks:
@@ -36,15 +45,25 @@ def compute_liveness(graph: FunctionGraph) -> Tuple[Dict[int, Set[str]], Dict[in
         use[blk.id] = used
         defs[blk.id] = defined
 
-    def transfer(blk, live_out: Set[str]) -> Set[str]:
-        return use[blk.id] | (live_out - defs[blk.id])
+    ids = [b.id for b in graph.blocks]
+    normal = {b.id: tuple(s for s in b.succs if s in defs) for b in graph.blocks}
+    exc = {b.id: tuple(s for s in b.except_succs if s in defs) for b in graph.blocks}
+    live_in: Dict[int, Set[str]] = {i: set() for i in ids}
+    live_out: Dict[int, Set[str]] = {i: set() for i in ids}
 
-    live_in, live_out = solve(
-        graph, "backward",
-        init=set, boundary=set,
-        meet=lambda vals: set().union(*vals),
-        transfer=transfer,
-    )
+    changed = True
+    while changed:
+        changed = False
+        for bid in reversed(ids):
+            out_n: Set[str] = set().union(*(live_in[s] for s in normal[bid])) \
+                if normal[bid] else set()
+            out_e: Set[str] = set().union(*(live_in[s] for s in exc[bid])) \
+                if exc[bid] else set()
+            new_out = out_n | out_e
+            new_in = use[bid] | (out_n - defs[bid]) | out_e
+            if new_in != live_in[bid] or new_out != live_out[bid]:
+                live_in[bid], live_out[bid] = new_in, new_out
+                changed = True
     return live_in, live_out
 
 
@@ -58,20 +77,31 @@ def _is_local_simple(name: str) -> bool:
 def find_dead_stores(graph: FunctionGraph) -> List[Opportunity]:
     if not graph.blocks:
         return []
-    _, live_out = compute_liveness(graph)
-    global_decls = graph.attrs.get("global_decls", set())
+    live_in, live_out = compute_liveness(graph)
+    # nonlocal/global stores write through to an outer scope — never dead here
+    global_decls = (set(graph.attrs.get("global_decls", set()))
+                    | set(graph.attrs.get("nonlocal_decls", set())))
     op_line = {op.id: (op.source[0] if op.source else None) for op in graph.iter_ops()}
 
     out: List[Opportunity] = []
     for blk in graph.blocks:
         live: Set[str] = set(live_out.get(blk.id, set()))
+        # names the handler(s) can still read: within-block kills don't apply
+        # on the exception path (the killing op may never run)
+        exc_keep: Set[str] = set()
+        for s in blk.except_succs:
+            exc_keep |= live_in.get(s, set())
         for op in reversed(blk.ops):
             is_params = op.attrs.get("kind") == "args"
             if not is_params:
                 has_call = bool(op.attrs.get("calls"))
                 for t in op.targets:
+                    # a branch that binds AND reads the name (match-case
+                    # capture consumed by its own guard) is self-consuming
+                    if op.kind == "branch" and t in op.uses:
+                        continue
                     if (_is_local_simple(t) and t not in global_decls
-                            and t not in live):
+                            and t not in live and t not in exc_keep):
                         ln = op_line.get(op.id)
                         ref = f"{graph.qualname}:def:{t}@{ln}" if ln else f"{graph.qualname}:op:{op.id}"
                         if has_call:

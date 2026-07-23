@@ -70,7 +70,11 @@ def find_use_before_def(graph: FunctionGraph) -> List[Opportunity]:
     if not graph.blocks:
         return []
     definite_in, universe, params = compute_definite_assignment(graph)
-    global_decls = graph.attrs.get("global_decls", set())
+    # nonlocal/global names resolve to an outer binding — reading them before
+    # any LOCAL assignment is fine (obol's `nonlocal last_log_at` read was
+    # flagged as a guaranteed UnboundLocalError)
+    global_decls = (set(graph.attrs.get("global_decls", set()))
+                    | set(graph.attrs.get("nonlocal_decls", set())))
     op_line = {op.id: (op.source[0] if op.source else None) for op in graph.iter_ops()}
     # per (op_id, name) reaching defs, to tell "never assigned" from "not on all paths"
     reaching = {(u.op_id, u.name): u.reaching_defs for u in graph.uses}
@@ -80,6 +84,12 @@ def find_use_before_def(graph: FunctionGraph) -> List[Opportunity]:
         assigned = set(definite_in.get(blk.id, set()))
         for op in blk.ops:
             for u in op.uses:
+                # match-case `case Err(error=e) if "401" in e:` lowers to one
+                # branch op that BINDS e then reads it in the guard — the
+                # pattern binding precedes the guard, so a same-op def+use on
+                # a branch is never unbound (obol preflight false positive)
+                if u in op.targets and op.kind == "branch":
+                    continue
                 if (u in universe and u not in params and u not in global_decls
                         and _is_simple_local(u) and u not in assigned):
                     ln = op_line.get(op.id)
@@ -91,11 +101,24 @@ def find_use_before_def(graph: FunctionGraph) -> List[Opportunity]:
                             ref=ref, op_id=op.id, block_id=blk.id, line=ln,
                             modality="must", soundness="heuristic"))
                     else:
+                        # hand the verifier the assignment sites: the common
+                        # false alarm is a correlated guard (assigned under
+                        # `if cur:`, used under a condition only true when
+                        # `cur` was) — path-insensitivity can't see it, but a
+                        # human/agent can check it in one look.
+                        def_lines = sorted({
+                            d.source[0] for d in graph.defs
+                            if d.id in reaching[(op.id, u)] and d.source})
+                        where = ", ".join(f"L{x}" for x in def_lines[:4])
                         out.append(Opportunity(
                             pass_name="use-before-def", kind="maybe_unbound",
                             title=f"`{u}` may be unbound here — assigned on some but not all "
                                   f"paths reaching this use",
                             ref=ref, op_id=op.id, block_id=blk.id, line=ln,
-                            modality="may", soundness="heuristic"))
+                            modality="may", soundness="heuristic",
+                            detail=f"assigned at {where}; check whether this "
+                                   f"use's own guard implies the assigning "
+                                   f"branch (correlated guards are the usual "
+                                   f"false alarm)"))
             assigned.update(op.targets)
     return out

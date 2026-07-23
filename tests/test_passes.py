@@ -127,6 +127,70 @@ def test_loop_variable_not_flagged():
     assert "it" not in _dead_names(g)
 
 
+def test_defensive_init_before_try_not_dead():
+    # `x = None; try: x = fetch(); except: pass; use(x)` — on the exception
+    # path the try-body assignment never ran, so the initializer is what the
+    # later read sees. Kills must not apply across exceptional edges
+    # (obol harbor reward parsing false positive).
+    g = build("""
+        def f(ws):
+            raw = None
+            try:
+                raw = ws.download()
+            except FileNotFoundError:
+                pass
+            if raw is not None:
+                return raw
+            return b""
+    """, "f")
+    assert "raw" not in _dead_names(g)
+
+
+def test_match_guard_capture_not_unbound_or_dead():
+    # `case Err(error=e) if "401" in e:` — one branch op binds e AND reads it
+    # in the guard; pattern binding precedes the guard (obol preflight FP).
+    g = build("""
+        def f(result):
+            match result:
+                case Err(error=e) if "401" in e:
+                    return retry()
+                case _:
+                    pass
+            return result
+    """, "f")
+    assert not any("e" == o.ref.split(":use:")[-1].split("@")[0]
+                   for o in find_use_before_def(g) if ":use:" in o.ref)
+    assert "e" not in _dead_names(g)
+
+
+def test_nonlocal_read_in_closure_not_unbound():
+    # the closure's read resolves to the ENCLOSING binding
+    g = build("""
+        def outer():
+            def probe():
+                nonlocal last
+                if last > 0:
+                    last = 0
+                return last
+            return probe
+    """, "outer.probe")
+    assert find_use_before_def(g) == []
+
+
+def test_nonlocal_write_capture_keeps_parent_store_alive():
+    # the closure assigns via nonlocal (Store ctx) — the capture must still
+    # count as a use of the parent's binding
+    g = build("""
+        def parent():
+            last = 0.0
+            def probe():
+                nonlocal last
+                last = now()
+            return probe
+    """, "parent")
+    assert "last" not in _dead_names(g)
+
+
 # -- unreachable ---------------------------------------------------------
 
 def test_unreachable_after_return():
@@ -229,6 +293,161 @@ def test_redundant_branch_skips_while_true_and_nonconstant():
     assert find_redundant_branches(g) == []
 
 
+# -- implied-condition (dominator implication) ----------------------------
+
+def test_implied_condition_flags_pure_retest():
+    g = build("""
+        def f(c, d):
+            if c:
+                if d:
+                    x = 1
+                if c:
+                    y = 2
+            return 0
+    """, "f")
+    opps = [o for o in find_redundant_branches(g) if o.kind == "implied_condition"]
+    assert len(opps) == 1
+    assert opps[0].soundness == "sound" and opps[0].modality == "must"
+    assert "decided True" in opps[0].title
+
+
+def test_implied_condition_rejects_redefinition_between():
+    g = build("""
+        def f(c):
+            if c:
+                c = update(c)
+                if c:
+                    y = 2
+            return 0
+    """, "f")
+    assert [o for o in find_redundant_branches(g)
+            if o.kind == "implied_condition"] == []
+
+
+def test_implied_condition_rejects_loop_redefinition():
+    # the def after the re-test comes BACK via the loop — cycles count.
+    g = build("""
+        def f(c):
+            while c:
+                if c:
+                    work()
+                c = step(c)
+            return 0
+    """, "f")
+    assert [o for o in find_redundant_branches(g)
+            if o.kind == "implied_condition"] == []
+
+
+def test_implied_condition_silent_on_wait_then_recheck():
+    # the concurrency idiom: attribute guard re-tested after a blocking call
+    # (queue.Queue.put's `if self.is_shutdown` after not_full.wait()). An
+    # intervening call can invalidate any attribute condition — stay silent.
+    g = build("""
+        def f(self):
+            if self.stop:
+                raise Shutdown
+            self.cond.wait()
+            if self.stop:
+                raise Shutdown
+    """, "f")
+    assert [o for o in find_redundant_branches(g)
+            if o.kind == "implied_condition"] == []
+
+
+def test_implied_condition_negation_aware():
+    # `if not c` under a dominating `if c` is decided False.
+    g = build("""
+        def f(c):
+            if c:
+                if not c:
+                    x = 1
+                return 1
+            return 0
+    """, "f")
+    opps = [o for o in find_redundant_branches(g) if o.kind == "implied_condition"]
+    assert len(opps) == 1
+    assert "decided False" in opps[0].title
+    assert opps[0].soundness == "sound"
+
+
+def test_implied_condition_not_fooled_by_merge_arm():
+    # `if x: body` with no else: succs[1] IS the merge block and dominates
+    # everything after — it must NOT read as "x was False". This exact shape
+    # produced four false sound/must findings on seeker-dev (sign(),
+    # cmd_lease_status, cmd_node_show).
+    g = build("""
+        def f(x):
+            if x:
+                work(x)
+            done()
+            if x:
+                more(x)
+            return 0
+    """, "f")
+    assert [o for o in find_redundant_branches(g)
+            if o.kind == "implied_condition"] == []
+
+
+def test_implied_condition_skips_nonlocal_written_names():
+    g = build("""
+        def f(c):
+            def flip():
+                nonlocal c
+                c = not c
+            if c:
+                flip()
+                if c:
+                    return 1
+            return 0
+    """, "f")
+    assert [o for o in find_redundant_branches(g)
+            if o.kind == "implied_condition"] == []
+
+
+def test_const_prop_respects_nonlocal_closure_writes():
+    # seeker-dev's `stop` flag: constant False locally, flipped by a signal
+    # handler closure via nonlocal — was reported [sound/must] constant.
+    g = build("""
+        def f(items):
+            stop = False
+            def on_sigint():
+                nonlocal stop
+                stop = True
+            register(on_sigint)
+            for it in items:
+                if stop:
+                    break
+            return 0
+    """, "f")
+    assert find_constant_branches(g) == []
+
+
+def test_nonlocal_store_in_closure_not_dead():
+    # the closure's own graph: `nonlocal stop; stop = True` writes through to
+    # the enclosing scope — never a dead store.
+    g = build("""
+        def f():
+            def on_sigint():
+                nonlocal stop
+                stop = True
+            return on_sigint
+    """, "f.on_sigint")
+    assert find_dead_stores(g) == []
+
+
+def test_implied_condition_call_condition_without_calls_between():
+    g = build("""
+        def f(x):
+            if isinstance(x, str):
+                if isinstance(x, str):
+                    return 1
+            return 0
+    """, "f")
+    opps = [o for o in find_redundant_branches(g) if o.kind == "implied_condition"]
+    assert len(opps) == 1
+    assert opps[0].soundness == "heuristic"   # call in condition -> not sound
+
+
 # -- complexity ----------------------------------------------------------
 
 def test_nesting_distinguishes_sequential_from_nested():
@@ -247,6 +466,18 @@ def test_complexity_hotspot_for_deep_nesting():
               "                if d:\n                    if e:\n"
               "                        return 1\n    return 0\n", "f")
     assert any(o.pass_name == "complexity" for o in find_complexity_hotspots(g))
+
+
+def test_complexity_emits_one_finding_per_function():
+    # however many thresholds a function crosses, the pass reports ONE hotspot
+    # (separate per-metric findings triple-counted the same structural mass).
+    src = "def f(%s):\n%s    return 0\n" % (
+        ", ".join(f"a{i}" for i in range(14)),
+        "".join(f"    if a{i}:\n        x{i} = a{i} + 1\n" for i in range(14)))
+    g = build(src, "f")
+    opps = find_complexity_hotspots(g)
+    assert len(opps) == 1
+    assert opps[0].kind == "hotspot"
 
 
 # -- constant propagation ------------------------------------------------
