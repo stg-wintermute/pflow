@@ -461,6 +461,35 @@ Measured/reasoned skips (so they aren't re-attempted blindly):
   instructions as poor-man's type inference — would collapse ~k smear for
   hot paths); Tier-2 uops have no stable API.
 
+## Phase 17 (2026-07-23): re-audit response — provenance-tiered edges + the
+## stale-cache bug
+
+The external agent re-audited on seeker-dev: two fixes confirmed, cycle
+smear half-fixed (the ~2-candidate fabrications survived every count-based
+threshold), and one new bug — the callgraph cache served YESTERDAY'S
+resolver's results because it was keyed on source files only.
+
+- **Cache identity now includes the analyzer**: `_pflow_fingerprint()` walks
+  every pflow source file (was a stale hand-picked list of 5), memoized per
+  process; the callgraph blob is gated on BOTH the file digest and the
+  fingerprint. With an editable install, every shipped fix is now visible on
+  the next run — no `--no-cache` required.
+- **Resolution provenance ends count-based smear thresholds**: every edge
+  records its resolution kind; simple-name matches with a dotted receiver
+  (step-3 same-module AND step-5 global — the audit's three survivors were
+  all step-3: dict `.get` cross-class, `app.deploy` on a local, SDK-object
+  `.terminate`) are SOFT regardless of candidate count. Soft edges render
+  `~` (k=1) in chains/hubs, never close cycles (`cycle_is_smeared` = the SCC
+  falls apart on sharp edges alone), never count as self-recursion, and
+  never propagate exceptions in `raises`. Same-module dotted matches also
+  get the methods-only filter.
+- seeker-dev now prints `cycles (4 sharp · 3 smeared~)` — the four real
+  cycles first, the three verified fabrications tiered and marked, in both
+  the census and callgraph views.
+- Watch item (entrypoints 218→260) noted: this round marks rather than
+  culls, so no further creep; the step-3 methods-only filter may cull a few
+  genuinely-fabricated edges, which is the verified-correct direction.
+
 ## Roadmap — all items above resolved (implemented or measured-and-rejected)
 
 1. **Raise the sound-tier yield — this is the trust ceiling.** Distrust is

@@ -127,8 +127,17 @@ class ProgramGraph:
 
     def resolve_call(self, caller_fqname: str, call_name: str) -> Set[str]:
         """Best-effort resolution of a call name to callee fqnames."""
+        return self.resolve_call_kind(caller_fqname, call_name)[0]
+
+    def resolve_call_kind(self, caller_fqname: str, call_name: str
+                          ) -> Tuple[Set[str], str]:
+        """(targets, kind). kind names the resolution step — consumers treat
+        'global' (the simple-name fallback) as SOFT evidence: real enough to
+        show marked, too weak to build cycles or propagate exceptions on
+        (dict .get / SDK-object smears fabricated 2-cycles at k<=2, below
+        every count-based threshold)."""
         if not call_name:
-            return set()
+            return set(), "none"
         relpath = self._func_module.get(caller_fqname)
         mod = self.modules.get(relpath) if relpath else None
         parts = call_name.split(".")
@@ -139,7 +148,7 @@ class ProgramGraph:
         if len(parts) == 2 and parts[0].startswith("super(") and mod is not None:
             owner = self.class_of(caller_fqname)
             if owner:
-                return self._base_methods_named(owner, last, mod)
+                return self._base_methods_named(owner, last, mod), "self"
 
         # 1. self.method / cls.method -> methods of the caller's class (+ bases).
         if len(parts) == 2 and parts[0] in ("self", "cls") and mod is not None:
@@ -147,7 +156,7 @@ class ProgramGraph:
             if owner:
                 hits = self._methods_named(owner, last, mod)
                 if hits:
-                    return hits
+                    return hits, "self"
 
         # 2. imported name: resolve THROUGH the import, never past it.
         # `os.path.join(...)` is a call into os.path — if that module isn't in
@@ -166,7 +175,7 @@ class ProgramGraph:
             elif parts[0] in src:
                 dotted, rest = src[parts[0]], parts[1:]
             if dotted is not None:
-                return self._resolve_via_import(dotted, rest, mod)
+                return self._resolve_via_import(dotted, rest, mod), "import"
 
         # An attribute call through a non-self receiver (`self._client.create()`)
         # matching the CALLING method's own name is a coincidence, not
@@ -179,20 +188,24 @@ class ProgramGraph:
             len(parts) == 2 and parts[0] in ("self", "cls"))
 
         # 3. same-module function by qualname suffix (or class -> __init__).
+        # For a DOTTED receiver this is still just a simple-name coincidence
+        # (`self._snapshots.get(...)` hitting the other cache class's `get` in
+        # the same file) — methods only, and SOFT like the global fallback.
         if mod is not None:
             same = {fq for fq in mod.func_qualnames
                     if fq.split(":", 1)[1].split(".")[-1] == last}
             if dotted_other:
                 same.discard(caller_fqname)
+                same = {fq for fq in same if "." in fq.split(":", 1)[1]}
             if same:
-                return same
+                return same, ("global" if dotted_other else "same-module")
             if last in mod.classes:
-                return self._constructor_of(mod.relpath, last)
+                return self._constructor_of(mod.relpath, last), "ctor"
 
         # 4. bare builtin-name call (`len(x)`, `print(...)`): it's the
         # builtin — not the same-named method somewhere in the program.
         if call_name == last and last in _BUILTIN_NAMES:
-            return set()
+            return set(), "builtin"
 
         # 5. global match by simple name (across the whole program) — capped:
         # past ~two dozen candidates a "match" carries no information (think
@@ -201,13 +214,13 @@ class ProgramGraph:
         # smeared counts as unresolved, which consumers already report.
         hits = set(self._by_simple.get(last, set()))
         if len(hits) > _SMEAR_CAP:
-            return set()
+            return set(), "smear-capped"
         # `sep.join(...)`, `d.items()` — an attribute call whose method name
         # belongs to a builtin type is far more likely str/dict/list traffic
         # than a hit on one of several same-named in-program methods; only a
         # near-unique name keeps evidential value.
         if "." in call_name and last in _BUILTIN_TYPE_METHODS and len(hits) > 3:
-            return set()
+            return set(), "smear-capped"
         if dotted_other:
             hits.discard(caller_fqname)
             # an attribute call can only land on a METHOD: `state.db.get_rental()`
@@ -215,7 +228,7 @@ class ProgramGraph:
             # (module receivers already resolved through imports in step 2).
             # This smear fabricated a 4-node "rental cycle" out of an app route.
             hits = {fq for fq in hits if "." in fq.split(":", 1)[1]}
-        return hits
+        return hits, "global"
 
     def _module_by_name(self, name: str) -> Optional[str]:
         """relpath of the in-program module `name`, matching exactly or by
@@ -388,18 +401,33 @@ def _build_one(job):
 
 # -- on-disk cache -------------------------------------------------------
 
+_FINGERPRINT_MEMO: Optional[str] = None
+
+
 def _pflow_fingerprint() -> str:
-    """Hash of pflow's own analysis sources; invalidates the cache on edits."""
+    """Hash of EVERY pflow source file; invalidates caches on any tool edit.
+    A hand-picked file list silently went stale (an external audit caught the
+    callgraph cache serving results from yesterday's resolver — the edited
+    module wasn't on the list's consumers' key). Walking the package (~50
+    stats, memoized per process) closes the class."""
+    global _FINGERPRINT_MEMO
+    if _FINGERPRINT_MEMO is not None:
+        return _FINGERPRINT_MEMO
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the pflow package
     stamps = [_CACHE_FORMAT]
-    for sub in ("ir/cfg.py", "ir/graph.py", "analysis/dataflow.py",
-                "analysis/program.py", "analysis/interproc.py"):
-        try:
-            st = os.stat(os.path.join(here, sub))
-            stamps.append((sub, st.st_mtime_ns, st.st_size))
-        except OSError:
-            pass
-    return hashlib.sha1(repr(stamps).encode()).hexdigest()[:16]
+    for dirpath, dirnames, filenames in os.walk(here):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        for fn in sorted(filenames):
+            if fn.endswith(".py"):
+                p = os.path.join(dirpath, fn)
+                try:
+                    st = os.stat(p)
+                    stamps.append((os.path.relpath(p, here),
+                                   st.st_mtime_ns, st.st_size))
+                except OSError:
+                    pass
+    _FINGERPRINT_MEMO = hashlib.sha1(repr(stamps).encode()).hexdigest()[:16]
+    return _FINGERPRINT_MEMO
 
 
 def _cache_path(root: str) -> str:

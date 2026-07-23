@@ -36,6 +36,11 @@ class CallGraph:
     # every helper-mediated call path is invisible (seeker's production
     # routes to its validators only existed through tests).
     via_arg: Set[Tuple[str, str]] = field(default_factory=set)
+    # edges whose ONLY evidence is the simple-name global fallback ('global'
+    # resolution kind) — k can be 1 and still be a guess (`app.deploy(...)` on
+    # a local hitting ModalClient.deploy). Marked `~`, excluded from cycle
+    # verdicts and exception propagation.
+    soft: Set[Tuple[str, str]] = field(default_factory=set)
 
     def fan_in(self, fq: str) -> int:
         return len(self.rev.get(fq, ()))
@@ -45,7 +50,13 @@ class CallGraph:
 
     def edge_mark(self, caller: str, callee: str) -> str:
         k = self.ambiguity.get((caller, callee), 1)
-        return f"~{k}" if k > 1 else ""
+        if k > 1:
+            return f"~{k}"
+        return "~" if (caller, callee) in self.soft else ""
+
+    def edge_is_soft(self, caller: str, callee: str) -> bool:
+        key = (caller, callee)
+        return self.ambiguity.get(key, 1) > 1 or key in self.soft
 
 
 def program_callgraph(pg: ProgramGraph) -> CallGraph:
@@ -72,10 +83,15 @@ def _cg_cache_path(pg: ProgramGraph) -> str:
 
 def _load_cg_cache(pg: ProgramGraph) -> Optional[CallGraph]:
     import pickle
+    from .program import _pflow_fingerprint
     try:
         with open(_cg_cache_path(pg), "rb") as f:
             blob = pickle.load(f)
-        if blob.get("digest") == pg.cache_digest:
+        # gate on BOTH identities: the analyzed files AND the analyzer.
+        # Keying on files alone served yesterday's resolver's edges after a
+        # pflow upgrade (external audit finding).
+        if (blob.get("digest") == pg.cache_digest
+                and blob.get("fp") == _pflow_fingerprint()):
             return blob["cg"]
     except Exception:
         pass
@@ -84,9 +100,11 @@ def _load_cg_cache(pg: ProgramGraph) -> Optional[CallGraph]:
 
 def _save_cg_cache(pg: ProgramGraph, cg: CallGraph) -> None:
     import pickle
+    from .program import _pflow_fingerprint
     try:
         with open(_cg_cache_path(pg), "wb") as f:
-            pickle.dump({"digest": pg.cache_digest, "cg": cg}, f,
+            pickle.dump({"digest": pg.cache_digest, "fp": _pflow_fingerprint(),
+                         "cg": cg}, f,
                         protocol=pickle.HIGHEST_PROTOCOL)
     except Exception as e:  # noqa: BLE001
         import sys
@@ -100,8 +118,9 @@ def _build_callgraph(pg: ProgramGraph) -> CallGraph:
     unresolved: Dict[str, int] = {}
     ambiguity: Dict[Tuple[str, str], int] = {}
     via_arg: Set[Tuple[str, str]] = set()
+    soft: Set[Tuple[str, str]] = set()
 
-    def add(fq: str, targets, is_arg: bool) -> None:
+    def add(fq: str, targets, kind: str, is_arg: bool) -> None:
         k = len(targets)
         for t in targets:
             if t in edges:
@@ -113,6 +132,10 @@ def _build_callgraph(pg: ProgramGraph) -> CallGraph:
                 ambiguity[key] = min(ambiguity.get(key, k), k)
                 if is_arg:
                     via_arg.add(key)
+                if kind == "global":
+                    soft.add(key)
+                elif key in soft:
+                    soft.discard(key)     # sharper evidence supersedes
 
     for fq, g in pg.functions.items():
         local_names = {d.name for d in g.defs}
@@ -120,9 +143,9 @@ def _build_callgraph(pg: ProgramGraph) -> CallGraph:
             for c in op.attrs.get("calls", ()):
                 name = c.get("func")
                 if name:
-                    targets = pg.resolve_call(fq, name)
+                    targets, kind = pg.resolve_call_kind(fq, name)
                     if targets:
-                        add(fq, targets, is_arg=False)
+                        add(fq, targets, kind, is_arg=False)
                     else:
                         unresolved[fq] = unresolved.get(fq, 0) + 1
                 # address-taken: a BARE name passed as an argument that
@@ -131,11 +154,11 @@ def _build_callgraph(pg: ProgramGraph) -> CallGraph:
                 # variables are values, not function references)
                 for a in c.get("args", ()):
                     if a and "." not in a and a not in local_names:
-                        targets = pg.resolve_call(fq, a)
+                        targets, kind = pg.resolve_call_kind(fq, a)
                         if targets and len(targets) <= 2:
-                            add(fq, targets, is_arg=True)
+                            add(fq, targets, kind, is_arg=True)
     return CallGraph(edges=edges, rev=rev, unresolved=unresolved,
-                     ambiguity=ambiguity, via_arg=via_arg)
+                     ambiguity=ambiguity, via_arg=via_arg, soft=soft)
 
 
 def call_paths(cg: CallGraph, to: str, origin: Optional[str] = None,
@@ -224,16 +247,50 @@ def cycles(cg: CallGraph) -> List[List[str]]:
     # .create()` inside Sandbox.create matching its own name) is a resolution
     # artifact, not recursion.
     out += [[v] for v in cg.edges
-            if v in cg.edges.get(v, ()) and cg.ambiguity.get((v, v), 1) == 1]
+            if v in cg.edges.get(v, ()) and not cg.edge_is_soft(v, v)]
     return out
 
 
 def cycle_is_smeared(cg: CallGraph, comp: List[str]) -> bool:
-    """True when every closing edge of the cycle is ambiguous (~k>1) — the
-    'cycle' may exist only in name-resolution space."""
+    """True when the cycle cannot be closed without at least one SOFT edge
+    (ambiguous k>1 or global-fallback) — it may exist only in name-resolution
+    space. A cycle whose every member is reachable around the loop on sharp
+    edges alone is real."""
     members = set(comp)
-    internal = [(a, b) for a in comp for b in cg.edges.get(a, ()) if b in members]
-    return bool(internal) and all(cg.ambiguity.get(e, 1) > 1 for e in internal)
+    sharp_edges: Dict[str, List[str]] = {m: [] for m in comp}
+    any_edge = False
+    for a in comp:
+        for b in cg.edges.get(a, ()):
+            if b in members:
+                any_edge = True
+                if not cg.edge_is_soft(a, b):
+                    sharp_edges[a].append(b)
+    if not any_edge:
+        return False
+    # is `comp` still strongly connected using sharp edges only?
+    start = comp[0]
+    seen = {start}
+    stack = [start]
+    while stack:
+        for n in sharp_edges.get(stack.pop(), ()):
+            if n not in seen:
+                seen.add(n)
+                stack.append(n)
+    if seen != members:
+        return True
+    # reverse reachability too (strong connectivity, not just reach)
+    rev_sharp: Dict[str, List[str]] = {m: [] for m in comp}
+    for a, bs in sharp_edges.items():
+        for b in bs:
+            rev_sharp[b].append(a)
+    seen = {start}
+    stack = [start]
+    while stack:
+        for n in rev_sharp.get(stack.pop(), ()):
+            if n not in seen:
+                seen.add(n)
+                stack.append(n)
+    return seen != members
 
 
 def layers(cg: CallGraph, roots: Optional[List[str]] = None) -> Dict[str, int]:

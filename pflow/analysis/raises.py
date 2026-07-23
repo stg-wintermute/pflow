@@ -167,13 +167,13 @@ def analyze_function(pg: Optional[ProgramGraph], cg: Optional[CallGraph],
                     name = c.get("func")
                     if not name:
                         continue
-                    targets = [t for t in pg.resolve_call(fq, name)
-                               if t in pg.functions]
+                    resolved, kind = pg.resolve_call_kind(fq, name)
+                    targets = [t for t in resolved if t in pg.functions]
                     if not targets:
                         continue
-                    if len(targets) > 1:
-                        smeared += 1
-                        continue                     # smear: do not propagate
+                    if len(targets) > 1 or kind == "global":
+                        smeared += 1                 # smear/guess: don't propagate
+                        continue
                     ln = op.source[0] if op.source else 0
                     calls.append((ln, targets, caught_here))
     short = fq.split(":")[-1]

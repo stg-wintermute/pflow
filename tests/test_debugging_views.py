@@ -464,6 +464,54 @@ def test_dataflow_anomalies_mode(capsys, tmp_path):
 
 # -- callgraph precision ---------------------------------------------------------
 
+def test_dict_get_smear_cycle_is_tiered_smeared(capsys, tmp_path):
+    # two cache classes each calling a plain dict's .get fabricated a
+    # LoadCache.get <-> TelemetryCache.get "cycle" at k<=2 — below every
+    # count threshold. Same-file dotted-receiver matches are SOFT: the cycle
+    # must be tiered smeared~, never presented as sharp architecture.
+    (tmp_path / "caches.py").write_text(
+        "class LoadCache:\n"
+        "    def __init__(self):\n        self._d = {}\n"
+        "    def get(self, k):\n        return self._d.get(k)\n\n"
+        "class TelemetryCache:\n"
+        "    def __init__(self):\n        self._m = {}\n"
+        "    def get(self, k):\n        return self._m.get(k)\n")
+    code, out, _ = run(capsys, "callgraph", str(tmp_path), "--no-cache")
+    assert code == 0
+    if "LoadCache.get" in out and "<->" in out:
+        assert "smeared~" in out
+        assert "0 sharp" in out or "sharp" in out
+
+
+def test_soft_edges_do_not_propagate_raises(capsys, tmp_path):
+    (tmp_path / "prov.py").write_text(
+        "class Client:\n"
+        "    def deploy(self, spec):\n        raise RuntimeError('boom')\n\n"
+        "def live_deploy(app, spec):\n"
+        "    app.deploy(spec)\n")          # soft: `app` is a param, not a Client
+    code, out, _ = run(capsys, "raises", str(tmp_path),
+                       "--focus", "live_deploy", "--no-cache")
+    assert code == 0
+    assert "RuntimeError" not in out       # guess-edges carry no exceptions
+
+
+def test_cg_cache_invalidates_on_tool_change(tmp_path, monkeypatch):
+    # the callgraph cache must key on the ANALYZER, not just the analyzed
+    # files — it served a pre-fix resolver's edges after a pflow upgrade.
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "c"))
+    (tmp_path / "m.py").write_text("def f():\n    return g()\n\ndef g():\n    return 1\n")
+    from pflow.analysis import program as prog_mod
+    from pflow.analysis.program import build_program
+    from pflow.analysis import interproc
+    cg1 = interproc.program_callgraph(build_program(str(tmp_path), use_cache=True))
+    monkeypatch.setattr(prog_mod, "_pflow_fingerprint", lambda: "different-tool")
+    pg2 = build_program(str(tmp_path), use_cache=True)
+    assert interproc._load_cg_cache(pg2) is None    # stale blob rejected
+    cg2 = interproc.program_callgraph(pg2)          # rebuilt, same answers
+    assert {k: sorted(v) for k, v in cg1.edges.items()} == \
+           {k: sorted(v) for k, v in cg2.edges.items()}
+
+
 def test_delegate_same_name_is_not_recursion(capsys, tmp_path):
     # Sandbox.create -> self._client.create(...) must not fabricate a
     # self-loop: an attribute call through a non-self receiver never

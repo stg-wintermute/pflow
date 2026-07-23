@@ -311,7 +311,7 @@ def format_program_report_agent(pg) -> str:
     if hub_rows:
         def hub_cell(fq, fi, fo):
             callers = cg.rev.get(fq, ())
-            smeared = sum(1 for c in callers if cg.ambiguity.get((c, fq), 1) > 1)
+            smeared = sum(1 for c in callers if cg.edge_is_soft(c, fq))
             mark = "~" if fi and smeared * 2 >= fi else ""
             return f"{fi}{mark}←{fo}→ {disp(fq)}"
         cells = " · ".join(hub_cell(fq, fi, fo) for fq, fi, fo in hub_rows[:6])
